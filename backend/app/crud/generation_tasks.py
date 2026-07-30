@@ -1,0 +1,230 @@
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import case, delete, distinct, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.app.models import GenerationTask
+
+# 北京时区（UTC+8），用于生成 batch_id 中的日期部分及今日批次统计
+# 集中在此处供 services.batch_generator 与 routers.batch 共同引用，
+# 避免循环依赖。
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def _format_seq(seq: int) -> str:
+    """格式化批次序号：1->"01", 9->"09", 10->"10", 100->"100"。"""
+    return f"{seq:02d}" if seq < 100 else str(seq)
+
+
+async def create_generation_tasks(
+    db: AsyncSession, tasks: list[GenerationTask]
+) -> list[GenerationTask]:
+    db.add_all(tasks)
+    await db.commit()
+    for task in tasks:
+        await db.refresh(task)
+    return tasks
+
+
+async def get_tasks_by_batch(
+    db: AsyncSession, batch_id: str
+) -> list[GenerationTask]:
+    result = await db.execute(
+        select(GenerationTask)
+        .where(GenerationTask.batch_id == batch_id)
+        .order_by(GenerationTask.id)
+    )
+    return list(result.scalars().all())
+
+
+async def get_failed_tasks_by_batch(
+    db: AsyncSession, batch_id: str
+) -> list[GenerationTask]:
+    """获取批次中状态为失败的任务，用于重试。"""
+    result = await db.execute(
+        select(GenerationTask)
+        .where(
+            GenerationTask.batch_id == batch_id,
+            GenerationTask.status == "failed",
+        )
+        .order_by(GenerationTask.id)
+    )
+    return list(result.scalars().all())
+
+
+async def get_task_by_id(db: AsyncSession, task_id: int) -> GenerationTask | None:
+    result = await db.execute(
+        select(GenerationTask).where(GenerationTask.id == task_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_incomplete_tasks(
+    db: AsyncSession, limit: int = 500
+) -> list[GenerationTask]:
+    """获取所有未结束的任务，用于后台轮询。"""
+    result = await db.execute(
+        select(GenerationTask)
+        .where(
+            or_(
+                GenerationTask.status == "pending",
+                GenerationTask.status == "queued",
+                GenerationTask.status == "in_progress",
+            )
+        )
+        .order_by(GenerationTask.created_at)
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def get_recent_batches(
+    db: AsyncSession, page: int = 1, page_size: int = 10
+) -> tuple[list[dict], int]:
+    """分页获取最近的批次列表，包含任务数量与状态统计。
+
+    返回 (batches, total) 元组：batches 为当前页数据，total 为总批次数。
+    """
+    offset = (page - 1) * page_size
+
+    subq = (
+        select(
+            GenerationTask.batch_id,
+            func.count().label("task_count"),
+            func.sum(
+                case((GenerationTask.status == "completed", 1), else_=0)
+            ).label("completed_count"),
+            func.max(GenerationTask.created_at).label("last_created_at"),
+        )
+        .group_by(GenerationTask.batch_id)
+        .subquery()
+    )
+
+    # 先统计总批次数（按 batch_id 去重后的行数）
+    total_result = await db.execute(select(func.count()).select_from(subq))
+    total = int(total_result.scalar_one() or 0)
+
+    result = await db.execute(
+        select(subq)
+        .order_by(subq.c.last_created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+
+    rows = []
+    for row in result.all():
+        rows.append(
+            {
+                "batch_id": row.batch_id,
+                "task_count": row.task_count,
+                "completed_count": row.completed_count or 0,
+                "last_created_at": row.last_created_at,
+            }
+        )
+    return rows, total
+
+
+async def count_batches_in_batches(db: AsyncSession, batch_ids: list[str]) -> int:
+    """统计指定批次 ID 列表中包含的任务总数（用于删除响应）。"""
+    if not batch_ids:
+        return 0
+    result = await db.execute(
+        select(func.count()).where(GenerationTask.batch_id.in_(batch_ids))
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def count_today_batches(
+    db: AsyncSession, prefix: str
+) -> tuple[int, str, str]:
+    """计算指定 prefix 在今天（北京时间）下一个可用的 batch_id。
+
+    使用"最小未使用 seq"策略（自动填充删除产生的空隙），保证：
+    - ``count``：今日已存在的 distinct batch_id 数量
+    - ``next_batch_id``：服务端即将分配给下一次创建的实际 ID
+    - ``date_str``：北京时间 MMDD（如 "0721"）
+
+    与 ``_generate_batch_id`` 共用同一份逻辑，确保前端预览序号与
+    后端实际分配的序号完全一致（避免分页漏算 + 删除空洞）。
+
+    历史背景：旧实现 ``count(distinct) + 1`` 在存在删除空洞时会
+    算出"已存在的 seq"导致死循环；该算法天然不会冲突，无需重试。
+    """
+    date_str = datetime.now(BEIJING_TZ).strftime("%m%d")
+    pattern = f"{prefix}{date_str}%"
+    prefix_with_date = f"{prefix}{date_str}"
+
+    result = await db.execute(
+        select(GenerationTask.batch_id)
+        .where(GenerationTask.batch_id.like(pattern))
+        .distinct()
+    )
+    existing = [row[0] for row in result.fetchall()]
+
+    used_seqs: set[int] = set()
+    for bid in existing:
+        seq_str = bid[len(prefix_with_date):]
+        try:
+            used_seqs.add(int(seq_str))
+        except ValueError:
+            # 防御：忽略无法解析为整数的 batch_id（正常情况不会发生，
+            # pattern 已过滤掉 UUID 等旧格式）
+            continue
+
+    # 找最小未使用 seq（填空隙），保持"第 N 条 = N"的语义
+    seq = 1
+    while seq in used_seqs:
+        seq += 1
+
+    next_batch_id = f"{prefix_with_date}{_format_seq(seq)}"
+    return len(existing), date_str, next_batch_id
+
+
+async def delete_batches(db: AsyncSession, batch_ids: list[str]) -> int:
+    """删除指定批次 ID 列表对应的所有任务，返回实际删除的任务数。"""
+    if not batch_ids:
+        return 0
+    result = await db.execute(
+        delete(GenerationTask).where(GenerationTask.batch_id.in_(batch_ids))
+    )
+    await db.commit()
+    return int(result.rowcount or 0)
+
+
+async def update_task_status(
+    db: AsyncSession,
+    task: GenerationTask,
+    status: str,
+    progress: int | None = None,
+    image_url: str | None = None,
+    error_msg: str | None = None,
+    toapis_task_id: str | None = None,
+) -> GenerationTask:
+    task.status = status
+    if progress is not None:
+        task.progress = progress
+    if image_url is not None:
+        task.image_url = image_url
+    if error_msg is not None:
+        task.error_msg = error_msg
+    if toapis_task_id is not None:
+        task.toapis_task_id = toapis_task_id
+    if status in ("completed", "failed"):
+        task.completed_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(task)
+    return task
+
+
+async def reset_task_for_regenerate(
+    db: AsyncSession, task: GenerationTask
+) -> GenerationTask:
+    """重置任务状态以便重新生成：清空图片/进度/错误/远端任务ID。"""
+    task.status = "pending"
+    task.progress = 0
+    task.image_url = None
+    task.error_msg = None
+    task.toapis_task_id = None
+    task.completed_at = None
+    await db.commit()
+    await db.refresh(task)
+    return task

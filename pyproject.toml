@@ -1,0 +1,15 @@
+[project]
+name = "gpt2"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.139.0",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.14.2",
+    "python-dotenv>=1.2.2",
+    "python-multipart>=0.0.32",
+    "uvicorn[standard]>=0.51.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "aiomysql>=0.2.0",
+    "cryptography>=49.0.0",
+]
