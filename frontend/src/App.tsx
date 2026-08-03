@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import BatchGenerator from './components/BatchGenerator'
 import ErrorBoundary from './components/ErrorBoundary'
+import FolderBatchGenerator from './components/FolderBatchGenerator'
 import ImagePreview from './components/ImagePreview'
 import ParameterSelector from './components/ParameterSelector'
 import ProductSwapper from './components/ProductSwapper'
@@ -13,7 +14,7 @@ import type { TaskStatus, VariantGroupListItem } from './types'
 
 const POLL_INTERVAL_MS = 3000
 
-type TabKey = 'single' | 'groups' | 'batch' | 'product_swap'
+type TabKey = 'single' | 'groups' | 'batch' | 'product_swap' | 'folder_batch'
 
 const statusText: Record<string, string> = {
   queued: '排队中',
@@ -54,7 +55,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (activeTab === 'batch') {
+    if (activeTab === 'batch' || activeTab === 'folder_batch') {
       loadGroups()
     }
   }, [activeTab, loadGroups])
@@ -169,6 +170,12 @@ export default function App() {
             onClick={() => setActiveTab('product_swap')}
           >
             产品替换
+          </TabButton>
+          <TabButton
+            active={activeTab === 'folder_batch'}
+            onClick={() => setActiveTab('folder_batch')}
+          >
+            文件夹批量
           </TabButton>
         </nav>
       </header>
@@ -286,6 +293,23 @@ export default function App() {
 
       <ErrorBoundary>
         {activeTab === 'product_swap' && <ProductSwapper />}
+      </ErrorBoundary>
+
+      <ErrorBoundary>
+        {activeTab === 'folder_batch' && (
+          <>
+            {groupsLoading ? (
+              <div className="card">加载变体组列表...</div>
+            ) : groupsError ? (
+              <div className="card error">{groupsError}</div>
+            ) : (
+              <FolderBatchGenerator
+                groups={groups}
+                selectedGroupId={selectedGroupId ?? null}
+              />
+            )}
+          </>
+        )}
       </ErrorBoundary>
 
       <ImagePreview

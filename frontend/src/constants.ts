@@ -26,3 +26,14 @@ export const BATCH_PREFIX_STORAGE_KEY = 'gpt2.batchPrefix'
 // 产品替换模式：产品图数量上下限（与后端 MIN/MAX_PRODUCT_SWAP_COUNT 同步）
 export const MIN_PRODUCT_SWAP_COUNT = 1
 export const MAX_PRODUCT_SWAP_COUNT = 20
+
+// 文件夹批量图生图（i2i_multi）模式：一次请求创建的批次数量上下限
+// 与后端 MIN/MAX_I2I_MULTI_COUNT 同步；前端预设 10/20/50 三个快捷选项
+export const MIN_I2I_MULTI_COUNT = 1
+export const MAX_I2I_MULTI_COUNT = 50
+export const I2I_MULTI_QUICK_PICKS = [10, 20, 50] as const
+
+// 文件夹批量图生图：接受的图片扩展名（小写）
+// 用户图片文件名规范：`阿拉伯数字 + 扩展名`，如 1.png / 23.jpg
+export const I2I_MULTI_IMAGE_EXTS = ['png', 'jpg', 'jpeg'] as const
+export const I2I_MULTI_FILENAME_PATTERN = /^(\d+)\.(png|jpg|jpeg)$/i

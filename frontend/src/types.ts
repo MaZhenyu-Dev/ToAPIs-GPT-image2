@@ -58,7 +58,8 @@ export interface VariantGroupListItem {
 // ---------- 批量生成 ----------
 
 // 生成模式：t2i（文生图）/ i2i（图生图，批次共享 reference）/ product_swap（产品替换，每任务独立 product）
-export type GenerationMode = 't2i' | 'i2i' | 'product_swap'
+// i2i_multi: 文件夹批量图生图，每张图一个批次，批次内 K 任务共享该图
+export type GenerationMode = 't2i' | 'i2i' | 'product_swap' | 'i2i_multi'
 
 // 产品图数量上下限的实际常量见 constants.ts 的 MIN_PRODUCT_SWAP_COUNT / MAX_PRODUCT_SWAP_COUNT
 
@@ -148,6 +149,24 @@ export interface TodayBatchCount {
   prefix: string
   date: string // 北京时间 MMDD，如 "0721"
   next_batch_id: string // 服务端即将分配给下一次创建的实际 ID
+}
+
+// ---------- 文件夹批量图生图（i2i_multi） ----------
+
+// i2i_multi 请求：一次创建 N 个 i2i 批次（每张图一个批次，批次内 K 任务共享该图）
+export interface I2iMultiCreateRequest {
+  group_id: number
+  image_urls: string[] // 长度 1-50，每张图对应一个批次
+  size: string
+  resolution: string
+  prefix?: string // 默认 "MZY"
+}
+
+// i2i_multi 响应：创建成功的所有 batch_id
+export interface I2iMultiCreateResponse {
+  batch_ids: string[] // 按 seq 升序
+  task_count: number // = batch_ids.length × 变体组大小 K
+  base_batch_id: string // 起始批次 ID（next_batch_id 实际值）
 }
 
 export interface ImageUploadResponse {

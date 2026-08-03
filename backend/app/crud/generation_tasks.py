@@ -15,6 +15,39 @@ def _format_seq(seq: int) -> str:
     return f"{seq:02d}" if seq < 100 else str(seq)
 
 
+def parse_batch_id_seq(batch_id: str, prefix: str, date_str: str) -> int:
+    """从 batch_id 中解析出 seq 整数部分。
+
+    用于 i2i_multi 模式在拿到 ``next_batch_id`` 后推算 N 个连续 seq。
+    失败时抛 ValueError，调用方需将其转译为用户可读的错误信息。
+    """
+    prefix_with_date = f"{prefix}{date_str}"
+    if not batch_id.startswith(prefix_with_date):
+        raise ValueError(
+            f"batch_id {batch_id!r} 不以 {prefix_with_date!r} 开头，"
+            "无法解析 seq"
+        )
+    seq_str = batch_id[len(prefix_with_date):]
+    return int(seq_str)
+
+
+async def find_existing_batch_ids(
+    db: AsyncSession, batch_ids: list[str]
+) -> set[str]:
+    """批量查询已存在的 batch_id（用于 i2i_multi 模式的 seq 冲突检测）。
+
+    一次往返完成 N 个 seq 的存在性检查，避免在锁内做 N 次单点查询。
+    """
+    if not batch_ids:
+        return set()
+    result = await db.execute(
+        select(GenerationTask.batch_id)
+        .where(GenerationTask.batch_id.in_(batch_ids))
+        .distinct()
+    )
+    return {row[0] for row in result.fetchall()}
+
+
 async def create_generation_tasks(
     db: AsyncSession, tasks: list[GenerationTask]
 ) -> list[GenerationTask]:
@@ -103,9 +136,15 @@ async def get_recent_batches(
     total_result = await db.execute(select(func.count()).select_from(subq))
     total = int(total_result.scalar_one() or 0)
 
+    # 排序：先按最近创建时间倒序，再按 batch_id 倒序作为稳定 tie-breaker
+    # - last_created_at DESC: 刚创建的批次排前面
+    # - batch_id DESC: 当一批 i2i_multi 同时创建 N 个批次时（所有任务同一次 commit，
+    #   created_at 几乎一致），按 batch_id 字典序降序作为稳定二级排序。
+    #   因 _format_seq 做 0 补齐（01 < 02 < ... < 99 < 100），
+    #   字典序天然 = 数值序，seq 大的排前面。
     result = await db.execute(
         select(subq)
-        .order_by(subq.c.last_created_at.desc())
+        .order_by(subq.c.last_created_at.desc(), subq.c.batch_id.desc())
         .offset(offset)
         .limit(page_size)
     )

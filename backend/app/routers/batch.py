@@ -16,6 +16,8 @@ from backend.app.schemas import (
     BatchListResponse,
     BatchStatusResponse,
     GenerationTaskOut,
+    I2iMultiCreateRequest,
+    I2iMultiCreateResponse,
     TodayBatchCountResponse,
 )
 from backend.app.services.batch_generator import batch_generator
@@ -34,6 +36,34 @@ async def generate_batch(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return BatchGenerateResponse(batch_id=batch_id, task_count=task_count)
+
+
+@router.post("/i2i-multi", response_model=I2iMultiCreateResponse)
+async def create_i2i_multi(
+    request: I2iMultiCreateRequest, db: AsyncSession = Depends(get_db)
+):
+    """文件夹批量图生图：原子创建 N 个 i2i 批次，每个批次绑定一张图片。
+
+    与 ``/generate`` 的核心差异：
+    - ``/generate``    → 1 批次 × K 变体 = K 任务，整批共用 1 张参考图
+    - ``/i2i-multi``   → N 批次 × K 变体 = N×K 任务，每批次用各自绑定的图片
+
+    数据一致性保证：服务端在进程内串行化 N 个 seq 的分配；
+    若 [base_seq, base_seq+N-1] 任意一段已被占用，整体拒绝。
+
+    必须在所有 ``/{batch_id}/...`` 路由之前定义，避免 ``/i2i-multi`` 被解析成 batch_id。
+    """
+    try:
+        batch_ids, task_count, base_batch_id = await batch_generator.create_i2i_multi(
+            db, request
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return I2iMultiCreateResponse(
+        batch_ids=batch_ids,
+        task_count=task_count,
+        base_batch_id=base_batch_id,
+    )
 
 
 @router.get("/today-count", response_model=TodayBatchCountResponse)

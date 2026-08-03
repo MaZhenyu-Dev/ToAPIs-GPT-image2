@@ -7,6 +7,8 @@ import type {
   GenerationRequest,
   GenerationTask,
   GenerationTaskItem,
+  I2iMultiCreateRequest,
+  I2iMultiCreateResponse,
   ImageUploadResponse,
   ProductSwapRequest,
   TaskStatus,
@@ -162,6 +164,17 @@ export function getTodayBatchCount(prefix: string): Promise<TodayBatchCount> {
   return fetchJson<TodayBatchCount>(
     `/api/batches/today-count?prefix=${encodeURIComponent(prefix)}`
   )
+}
+
+// ---------- 文件夹批量图生图（i2i_multi） ----------
+
+export function createI2iMulti(
+  payload: I2iMultiCreateRequest
+): Promise<I2iMultiCreateResponse> {
+  return fetchJson<I2iMultiCreateResponse>('/api/batches/i2i-multi', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function uploadImage(file: File): Promise<ImageUploadResponse> {

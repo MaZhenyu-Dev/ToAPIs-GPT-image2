@@ -12,12 +12,21 @@ SUPPORTED_SIZES = Literal[
     "16:9", "9:16", "2:1", "1:2", "21:9", "9:21",
 ]
 
-# 生成模式：t2i（文生图）/ i2i（图生图，批次共享 reference）/ product_swap（产品替换，每任务独立 product）
-GENERATION_MODE = Literal["t2i", "i2i", "product_swap"]
+# 生成模式：
+#   t2i        - 文生图
+#   i2i        - 图生图，批次内所有任务共享同一组 reference_image_urls
+#   product_swap - 产品替换，1 模板 + N 产品 → N 任务
+#   i2i_multi  - 文件夹批量图生图：N 张图各自成一个批次，每批次内 K 个任务共享该图片
+GENERATION_MODE = Literal["t2i", "i2i", "product_swap", "i2i_multi"]
 
 # product_swap 模式：产品图数量上下限，与 MAX_CONCURRENT_GENERATIONS=20 对齐
 MIN_PRODUCT_SWAP_COUNT = 1
 MAX_PRODUCT_SWAP_COUNT = 20
+
+# i2i_multi（文件夹批量图生图）：一次请求创建的批次数量上下限
+# 1 是最小值（至少 1 张图），50 是为了与前端 10/20/50 选项 + 自定义封顶对齐
+MIN_I2I_MULTI_COUNT = 1
+MAX_I2I_MULTI_COUNT = 50
 
 # ToAPIs 尺寸 / 分辨率 / 像素对照表
 SIZE_RESOLUTION_MAP: dict[str, dict[str, str]] = {
@@ -307,3 +316,62 @@ class TodayBatchCountResponse(BaseModel):
     prefix: str
     date: str
     next_batch_id: str
+
+
+# ---------- 文件夹批量图生图 schema（i2i_multi） ----------
+
+class I2iMultiCreateRequest(SizeResolutionMixin):
+    """文件夹批量图生图请求：一次创建 N 个 i2i 批次，每个批次对应一张图片。
+
+    使用场景：用户从一个本地文件夹中选 N 张图片（命名规范为阿拉伯数字），
+    把每张图分别作为独立批次的"参考图"，与同一变体组（K 个 prompt）组合，
+    最终产出 N 个批次 × K 个任务 = N×K 个生成任务。
+
+    与 ``BatchGenerateRequest`` 的关键差异：
+    - 前者一次创建 1 个批次、N 个变体 → N 个任务，共用 1 张参考图
+    - 本请求一次创建 N 个批次，每个批次 1 张独立参考图 → N×K 个任务
+
+    批次号分配：服务端拿到 next_batch_id 后按 seq 递增 1~N 分配；
+    任何一段 seq 已被占用会整体拒绝（数据一致性优先）。
+    """
+
+    group_id: int = Field(..., ge=1)
+    image_urls: list[str] = Field(
+        ...,
+        min_length=MIN_I2I_MULTI_COUNT,
+        max_length=MAX_I2I_MULTI_COUNT,
+        description="图片 URL 列表，按顺序生成 N 个批次（1-50 项）",
+    )
+    prefix: str = Field(default="MZY", description="批次号前缀，仅允许 A-Z / 0-9")
+
+    @field_validator("prefix")
+    @classmethod
+    def validate_prefix(cls, v: str) -> str:
+        v = v.upper()
+        if not BATCH_PREFIX_PATTERN.match(v):
+            raise ValueError("prefix 仅支持 1-10 位 A-Z / 0-9 字符")
+        return v
+
+    @field_validator("image_urls")
+    @classmethod
+    def validate_urls(cls, v: list[str]) -> list[str]:
+        """校验每个 URL 是 http(s) 协议，且不含逗号（避免破坏 CSV 切分）。"""
+        for url in v:
+            if not url.startswith(("http://", "https://")):
+                raise ValueError(f"URL 必须以 http:// 或 https:// 开头: {url!r}")
+            if "," in url:
+                raise ValueError(f"URL 不得含逗号（会破坏 CSV 切分）: {url!r}")
+        return v
+
+
+class I2iMultiCreateResponse(BaseModel):
+    """文件夹批量图生图响应：返回创建的所有 batch_id。
+
+    - batch_ids: 实际分配并入库的批次 ID 列表，按 seq 升序
+    - task_count: 总任务数 = batch_ids 长度 × 变体组大小（K）
+    - base_batch_id: 起始批次 ID（即 next_batch_id 实际值，前端用此渲染预览）
+    """
+
+    batch_ids: list[str] = Field(..., description="创建成功的批次 ID 列表（按 seq 升序）")
+    task_count: int = Field(..., description="总任务数 = batch_ids 长度 × 变体组大小")
+    base_batch_id: str = Field(..., description="起始批次 ID")

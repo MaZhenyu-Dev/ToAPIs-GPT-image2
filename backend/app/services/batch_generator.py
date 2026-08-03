@@ -6,17 +6,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import settings
 from backend.app.crud.generation_tasks import (
+    _format_seq,
     count_today_batches,
     create_generation_tasks,
+    find_existing_batch_ids,
     get_failed_tasks_by_batch,
     get_task_by_id,
+    parse_batch_id_seq,
     reset_task_for_regenerate,
     update_task_status,
 )
 from backend.app.crud.variant_groups import get_variant_group
 from backend.app.models import GenerationTask
-from backend.app.schemas import BatchGenerateRequest, ProductSwapRequest
+from backend.app.schemas import (
+    BatchGenerateRequest,
+    I2iMultiCreateRequest,
+    ProductSwapRequest,
+)
 from backend.app.toapis_client import client
+
+
+def _group_by_batch(
+    tasks: Sequence[GenerationTask],
+) -> dict[str, list[GenerationTask]]:
+    """按 batch_id 把任务列表分组（保持输入顺序）。
+
+    用于 i2i_multi 模式按批次并发提交到 ToAPIs。
+    """
+    grouped: dict[str, list[GenerationTask]] = {}
+    for task in tasks:
+        grouped.setdefault(task.batch_id, []).append(task)
+    return grouped
 
 
 class BatchGeneratorService:
@@ -137,6 +157,104 @@ class BatchGeneratorService:
 
         return batch_id, len(tasks)
 
+    async def create_i2i_multi(
+        self, db: AsyncSession, request: I2iMultiCreateRequest
+    ) -> tuple[list[str], int, str]:
+        """文件夹批量图生图：原子创建 N 个 i2i 批次。
+
+        与 ``create_batch`` 区别：
+        - 前者 1 批次 + K 变体 → K 任务，整批共用 1 张参考图
+        - 本方法 N 批次 × K 变体 → N×K 任务，每批次用各自绑定的图片
+
+        关键保证：
+        1. 进程内 ``_id_lock`` 串行化 N 个 seq 的分配（多 worker 部署需额外 DB 锁）
+        2. 在锁内做一次 ``find_existing_batch_ids`` 完整性校验：
+           若 [base_seq, base_seq+N-1] 任意一段已被其他用户占用，整体拒绝
+        3. 校验通过后一次性 INSERT 全部 N×K 条任务，全部成功才算提交
+        4. 后台并发提交 ToAPIs 时复用 ``_submit_to_toapis`` ，
+           ``_build_payload`` 优先用 ``task.reference_image_urls`` 拿到该批次的图
+
+        返回 ``(batch_ids, task_count, base_batch_id)``：
+        - ``batch_ids`` 按 seq 升序
+        - ``task_count`` = N × K
+        - ``base_batch_id`` = 实际分配的起始批次 ID
+        """
+        # 1) 校验变体组与 K
+        group = await get_variant_group(db, request.group_id)
+        if group is None:
+            raise ValueError(f"变体组 {request.group_id} 不存在")
+        if not group.variants:
+            raise ValueError("变体组中没有可用的 Prompt 变体")
+        K = len(group.variants)
+        N = len(request.image_urls)
+
+        if N * K > settings.MAX_CONCURRENT_GENERATIONS:
+            # 仅给警告，不阻塞（信号量会限流；放在锁外避免无谓等待）
+            pass
+
+        prefix = request.prefix  # 已通过 schema 校验并 uppercase
+
+        # 2) 锁内：分配 N 个连续 seq + 冲突检测
+        async with self._id_lock:
+            _, date_str, base_batch_id = await count_today_batches(db, prefix)
+            base_seq = parse_batch_id_seq(base_batch_id, prefix, date_str)
+            prefix_with_date = f"{prefix}{date_str}"
+
+            # 预生成所有目标 batch_id（seq 升序）
+            target_batch_ids = [
+                f"{prefix_with_date}{_format_seq(base_seq + i)}"
+                for i in range(N)
+            ]
+
+            # 一次性检查全部 seq 是否可用（find 一次往返，避免 N 次单查）
+            existing = await find_existing_batch_ids(db, target_batch_ids)
+            if existing:
+                # 数据一致性优先：只要任一 seq 被占，整体拒绝，由用户决定如何处理
+                raise ValueError(
+                    f"目标 batch_id 中有 {len(existing)} 个已被占用："
+                    f"{sorted(existing)}。"
+                    "请删除冲突批次或更换 prefix 后重试"
+                )
+
+            # 3) 构造 N×K 个 GenerationTask（按 seq 升序 / variant 顺序）
+            all_tasks: list[GenerationTask] = []
+            for batch_id, image_url in zip(target_batch_ids, request.image_urls):
+                for variant in group.variants:
+                    all_tasks.append(
+                        GenerationTask(
+                            batch_id=batch_id,
+                            variant_id=variant.id,
+                            mode="i2i_multi",
+                            size=request.size,
+                            resolution=request.resolution,
+                            status="pending",
+                            progress=0,
+                            # i2i_multi 关键：把"绑定到该批次的图"写到 task 级别
+                            # _build_payload 会优先读这里（避免污染 request 级共享字段）
+                            reference_image_urls=image_url,
+                        )
+                    )
+
+            # 4) 一次性 INSERT（要么全成要么全失败 - 内部 commit 由 crud 完成）
+            await create_generation_tasks(db, all_tasks)
+
+        # 5) 后台并发提交到 ToAPIs（分批：每个 batch_id 一组，对应 K 个任务）
+        # 用一个最小 BatchGenerateRequest 作为 carrier，让 _build_payload 拿到公共字段
+        # 注意：必须 fire-and-forget（asyncio.create_task），不能 await，
+        # 否则响应会等所有 ToAPIs 任务入队完成才返回，用户体验差且占用请求连接
+        carrier = BatchGenerateRequest(
+            group_id=request.group_id,
+            mode="i2i_multi",  # type: ignore[arg-type]
+            size=request.size,
+            resolution=request.resolution,
+            prefix=prefix,
+        )
+        # 按 batch_id 分组，每个 batch 一个后台协程，信号量会在 submit_one 内限流
+        for batch_id, batch_tasks in _group_by_batch(all_tasks).items():
+            asyncio.create_task(self._submit_to_toapis(batch_id, batch_tasks, carrier))
+
+        return target_batch_ids, N * K, base_batch_id
+
     async def _submit_to_toapis(
         self,
         batch_id: str,
@@ -235,8 +353,14 @@ class BatchGeneratorService:
         else:
             payload["prompt"] = ""
 
-        # 参考图：product_swap 模式用 [template, product]，其他模式沿用 reference_image_urls
-        if task.mode == "product_swap" and task.template_image_url and task.product_image_url:
+        # 参考图优先级（保证每个模式的"语义边界"清晰可读）：
+        # 1. i2i_multi 模式：用 task.reference_image_urls（每任务独立参考图）
+        #    - 由 create_i2i_multi 在 task 级别写入，不依赖 request 级共享
+        # 2. product_swap 模式：用 [template, product]
+        # 3. i2i 模式：用 request.reference_image_urls（批次内共享）
+        if task.mode == "i2i_multi" and task.reference_image_urls:
+            payload["reference_images"] = task.reference_image_urls.split(",")
+        elif task.mode == "product_swap" and task.template_image_url and task.product_image_url:
             payload["reference_images"] = [
                 task.template_image_url,
                 task.product_image_url,
