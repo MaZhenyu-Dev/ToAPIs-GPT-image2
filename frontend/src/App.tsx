@@ -6,6 +6,7 @@ import ImagePreview from './components/ImagePreview'
 import ParameterSelector from './components/ParameterSelector'
 import ProductSwapper from './components/ProductSwapper'
 import ResultActions from './components/ResultActions'
+import TitleGenerator from './components/TitleGenerator'
 import VariantGroupManager from './components/VariantGroupManager'
 import { useOnlineStatus } from './hooks/useOnlineStatus'
 import { createGeneration, getTaskStatus, listVariantGroups } from './api'
@@ -14,7 +15,7 @@ import type { TaskStatus, VariantGroupListItem } from './types'
 
 const POLL_INTERVAL_MS = 3000
 
-type TabKey = 'single' | 'groups' | 'batch' | 'product_swap' | 'folder_batch'
+type TabKey = 'single' | 'groups' | 'batch' | 'product_swap' | 'folder_batch' | 'title'
 
 const statusText: Record<string, string> = {
   queued: '排队中',
@@ -177,6 +178,12 @@ export default function App() {
           >
             文件夹批量
           </TabButton>
+          <TabButton
+            active={activeTab === 'title'}
+            onClick={() => setActiveTab('title')}
+          >
+            标题生成
+          </TabButton>
         </nav>
       </header>
 
@@ -310,6 +317,10 @@ export default function App() {
             )}
           </>
         )}
+      </ErrorBoundary>
+
+      <ErrorBoundary>
+        {activeTab === 'title' && <TitleGenerator />}
       </ErrorBoundary>
 
       <ImagePreview

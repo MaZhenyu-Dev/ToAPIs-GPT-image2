@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_GENERATIONS: int = 20
     POLL_INTERVAL_SECONDS: int = 5
 
+    # 标题生成：调用 ToAPIs chat/completions（多模态）时的并发上限。
+    # 标题任务无需像图像生成那样重度并发，限制在 10 避免触发 ToAPIs 429。
+    MAX_CONCURRENT_TITLE_GENERATIONS: int = 10
+
     @property
     def mysql_database_url(self) -> str:
         return (

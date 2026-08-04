@@ -47,6 +47,46 @@ class ToApisClient:
         )
         return response.json()
 
+    async def chat_completion(
+        self,
+        model: str,
+        messages: list[dict],
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout: int | None = None,
+    ) -> dict:
+        """调用 ToAPIs /v1/chat/completions（OpenAI 兼容）。
+
+        主要用于标题生成场景：
+        - messages 中 user 消息可携带 ``image_url`` 内容块（多模态）
+        - 默认走非流式（stream=False），便于后端一次性落库
+
+        返回 ToAPIs 原始 JSON（与 OpenAI Chat Completions 一致）：
+        ``{"choices": [{"message": {"role": "assistant", "content": "..."}}], ...}``
+        """
+        url = f"{self.base_url}/v1/chat/completions"
+        payload: dict = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if temperature is not None:
+            payload["temperature"] = temperature
+
+        # 标题生成单次响应快，单独短超时（默认 60s）；被调用方可覆盖
+        kwargs: dict = {
+            "method": "POST",
+            "url": url,
+            "headers": {**self._headers(), "Content-Type": "application/json"},
+            "json": payload,
+        }
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        response = await self._request_with_retry(**kwargs)
+        return response.json()
+
     async def _request_with_retry(
         self, method: str, url: str, **kwargs
     ) -> httpx.Response:

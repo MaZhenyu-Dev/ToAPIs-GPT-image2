@@ -150,7 +150,7 @@ async def regenerate_task(
 async def list_recent_batches(
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
-    page_size: int = Query(10, ge=1, le=100, description="每页数量"),
+    page_size: int = Query(10, ge=1, le=500, description="每页数量，最大 500"),
 ):
     """分页获取最近的批量生成批次列表。"""
     batches, total = await get_recent_batches(db, page=page, page_size=page_size)

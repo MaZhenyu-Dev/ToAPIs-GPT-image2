@@ -136,15 +136,21 @@ async def get_recent_batches(
     total_result = await db.execute(select(func.count()).select_from(subq))
     total = int(total_result.scalar_one() or 0)
 
-    # 排序：先按最近创建时间倒序，再按 batch_id 倒序作为稳定 tie-breaker
+    # 排序：先按最近创建时间倒序，再按 seq 数值倒序作为稳定 tie-breaker
     # - last_created_at DESC: 刚创建的批次排前面
-    # - batch_id DESC: 当一批 i2i_multi 同时创建 N 个批次时（所有任务同一次 commit，
-    #   created_at 几乎一致），按 batch_id 字典序降序作为稳定二级排序。
-    #   因 _format_seq 做 0 补齐（01 < 02 < ... < 99 < 100），
-    #   字典序天然 = 数值序，seq 大的排前面。
+    # - LENGTH(batch_id) DESC, batch_id DESC: 当一批 i2i_multi 同时创建 N 个批次时
+    #   （所有任务同一次 commit，created_at 几乎一致），需要按 seq 数值倒序作为
+    #   稳定二级排序。注意：_format_seq 对 seq < 100 做 0 补齐（"01".."99"），
+    #   但对 seq ≥ 100 走 str(seq)（"100"），此时纯字典序会错排
+    #   （"100" < "89"，因为 '1' < '8'），所以先按 LENGTH DESC 让"位数多 =
+    #   seq 更大"先成立，等长时再字典序 = 数值序。
     result = await db.execute(
         select(subq)
-        .order_by(subq.c.last_created_at.desc(), subq.c.batch_id.desc())
+        .order_by(
+            subq.c.last_created_at.desc(),
+            func.length(subq.c.batch_id).desc(),
+            subq.c.batch_id.desc(),
+        )
         .offset(offset)
         .limit(page_size)
     )

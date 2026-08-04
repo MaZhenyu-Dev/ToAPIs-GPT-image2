@@ -61,6 +61,8 @@
 | 变体组 | 增删改查变体组及组内 prompt 变体（最多 20 条） |
 | 批量生成 | 基于变体组一次创建 N 个任务，后台并发提交，支持信号量限流 |
 | 产品替换 | 1 张模板图 + 1..N 张产品图 → N 个任务，prompt 共用 |
+| 文件夹批量图生图 | N 张图各自独立批次，每张图 × 变体组 = N×K 个任务 |
+| 标题生成 | 选中 N 个批次 → 各取第 K 张已完成图 → 多模态模型（gemini-3.6-flash / grok-4.5 / gpt-5.6-sol）生成电商标题，支持重新生成；CSV 导出（即将推出） |
 | 批次管理 | 分页列表、状态统计、删除、批量删除 |
 | 失败重试 | 仅重置失败任务为 pending 并重新提交 |
 | 任务重生 | 对已完成 / 已失败任务重新生成（复用 task_id） |
@@ -276,6 +278,7 @@ npm run dev
 | `DATABASE_PASSWORD` | ✅（生产） | 空 | 同上 |
 | `DATABASE_NAME` | ❌ | `gpt_image2_platform` | 同上 |
 | `MAX_CONCURRENT_GENERATIONS` | ❌ | `20` | 同时向 ToAPIs 提交任务的最大并发 |
+| `MAX_CONCURRENT_TITLE_GENERATIONS` | ❌ | `10` | 同时向 ToAPIs chat/completions 提交的最大并发（标题生成） |
 | `POLL_INTERVAL_SECONDS` | ❌ | `5` | 后台轮询器周期（秒） |
 
 > 所有敏感字段（API Key、数据库密码）**不要**在源码或 `.env.example` 中写实际
@@ -378,6 +381,12 @@ npm run preview
 | DELETE | `/api/batches/{batch_id}` | 删除指定批次 |
 | DELETE | `/api/batches` | 批量删除（body: `{"batch_ids": [...]}`） |
 | POST   | `/api/product-swap/generate` | 产品替换：1 模板 + N 产品 → N 任务 |
+| GET    | `/api/title-tasks` | 标题生成任务列表（支持 batch_id / source_task_id / status 过滤） |
+| POST   | `/api/title-tasks/generate` | 批量标题生成（多批次 × 第 K 张图） |
+| GET    | `/api/title-tasks/batches/{batch_id}/images` | 查某批次可作为底图的图片列表 |
+| POST   | `/api/title-tasks/{id}/regenerate` | 单条标题重新生成 |
+| DELETE | `/api/title-tasks/{id}` | 单条标题删除 |
+| POST   | `/api/title-tasks/batch-delete` | 批量删除标题任务 |
 
 ### 批次号规则
 

@@ -172,3 +172,75 @@ export interface I2iMultiCreateResponse {
 export interface ImageUploadResponse {
   url: string
 }
+
+// ---------- 标题生成 ----------
+
+// 支持的多模态模型 ID（与后端白名单对齐）
+export type TitleModelId = 'gemini-3.6-flash' | 'grok-4.5' | 'gpt-5.6-sol'
+
+export interface TitleModelOption {
+  id: TitleModelId
+  label: string
+  description: string
+}
+
+// 单条 TitleTask
+export interface TitleTask {
+  id: number
+  source_task_id: number | null
+  batch_id: string
+  source_image_url: string
+  model: string
+  extra_instructions: string | null
+  max_tokens: number | null
+  temperature: number | null
+  status: 'pending' | 'in_progress' | 'completed' | 'failed'
+  title: string | null
+  error_msg: string | null
+  regenerated_count: number
+  created_at: string
+  completed_at: string | null
+}
+
+// 批次中可作为底图的图片条目（用于"选第 K 张图"）
+export interface TitleBatchImageItem {
+  index: number
+  task_id: number
+  image_url: string
+}
+
+export interface TitleBatchImagesResponse {
+  batch_id: string
+  images: TitleBatchImageItem[]
+}
+
+// 批量生成请求
+export interface TitleGenerateRequest {
+  batch_ids: string[]
+  image_index: number
+  model: TitleModelId
+  system_prompt?: string
+  max_tokens?: number | null
+  temperature?: number | null
+}
+
+// 批量生成响应
+export interface TitleGenerateResponse {
+  created: number
+  skipped: number
+  title_tasks: TitleTask[]
+  errors: { batch_id: string; reason: string }[]
+}
+
+// 重新生成请求
+export interface TitleRegenerateRequest {
+  model?: TitleModelId
+  system_prompt?: string
+  max_tokens?: number | null
+  temperature?: number | null
+}
+
+// 批量删除请求
+export interface TitleBatchDeleteRequest {
+  title_task_ids: number[]
+}

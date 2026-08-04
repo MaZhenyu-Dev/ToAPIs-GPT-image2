@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -75,3 +75,52 @@ class GenerationTask(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     variant: Mapped["Variant | None"] = relationship("Variant", lazy="joined")
+
+
+class TitleTask(Base):
+    """标题生成任务：基于已完成的 generation_task 图片调用多模态模型生成电商标题。
+
+    与 generation_tasks 是 1:1 关联（每个 title_task 锁定一个源任务作为底图）。
+    设计要点：
+    - 每次「生成 / 重新生成」都新建一条 TitleTask 记录（status 走 pending→completed
+      生命周期），便于审计 / 导出 CSV 时按时间排序。
+    - 冗余 batch_id / source_image_url 字段避免跨表 JOIN 加速列表查询。
+    - regenerated_count 统计该源任务累计重新生成次数（不含首次）。
+    """
+
+    __tablename__ = "title_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 源任务（提供底图的 generation_task）；SET NULL 让源任务被删除时保留标题历史
+    # 用 BigInteger 与 generation_tasks.id（init.sql 中为 BIGINT）保持一致，
+    # 避免 MySQL FK 3780 "Referencing column ... and referenced column ... are incompatible"
+    source_task_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("generation_tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # 冗余字段，加速列表查询与导出 CSV
+    batch_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    source_image_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    # 模型 + prompt 快照：每次生成都把当时使用的参数固化下来，方便后续审计
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 完整的 system prompt + 实际发送给模型的多模态 user 消息的文本部分
+    # 调试 / 复现时直接看这一列就能还原请求
+    prompt_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    # 用户在 system 之外附加的额外要求（可选），与 prompt_snapshot 区分以便 UI 渲染
+    extra_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # max_tokens / temperature：NULL 表示走 ToAPIs 默认
+    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 状态机：pending → in_progress → completed / failed
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    # 生成的标题（成功时填入）
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 累计重新生成次数（不含首次创建）
+    regenerated_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # 懒加载 source_task 用于详情页（列表页只读冗余字段，不触发 JOIN）
+    source_task: Mapped["GenerationTask | None"] = relationship("GenerationTask", lazy="noload")

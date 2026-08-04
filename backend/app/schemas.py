@@ -375,3 +375,133 @@ class I2iMultiCreateResponse(BaseModel):
     batch_ids: list[str] = Field(..., description="创建成功的批次 ID 列表（按 seq 升序）")
     task_count: int = Field(..., description="总任务数 = batch_ids 长度 × 变体组大小")
     base_batch_id: str = Field(..., description="起始批次 ID")
+
+
+# ---------- 标题生成 schema ----------
+
+# 支持的多模态模型列表。前端展示 + 后端校验白名单。
+SUPPORTED_TITLE_MODELS = Literal[
+    "gemini-3.6-flash",
+    "grok-4.5",
+    "gpt-5.6-sol",
+]
+
+# 默认地毯标题 system prompt（电商标题场景，temu 全托模式）
+# 用户可在前端覆盖，但默认用此模板足以覆盖大多数场景。
+DEFAULT_CARPET_TITLE_SYSTEM_PROMPT = (
+    "你是一名专业的电商店铺标题优化专家。请根据用户提供的商品图片，"
+    "生成 1 条适合 temu 平台全托模式的电商标题，要求：\n"
+    "1. 开头固定为「JIT 天鹅绒 850g」；\n"
+    "2. 后续依次覆盖：地毯图案描述 + 材质特点 + 地毯卖点 + 使用场景 + 推荐购买词；\n"
+    "3. 用优秀的电商标题特点（卖点前置、节奏感强、关键词密度高）润色；\n"
+    "4. 严禁使用以下 temu 平台高风险词：Best, Top, No.1, The Cheapest, #1, "
+    "Ultimate, The Only, Perfect, All-Time Favorite, Most Popular, Best Seller, "
+    "100% Waterproof, Never Fade, Anti-Allergy, Hypoallergenic, Medical Grade, "
+    "Cure, Treat, Heal, Miracle, 3D；\n"
+    "5. 严禁出现「儿童」「宝宝」等任何与儿童相关的内容；\n"
+    "6. 不要输出任何解释、编号、引号或前后缀，只输出最终标题文本本身。"
+)
+
+
+class TitleGenerateRequest(BaseModel):
+    """批量标题生成请求：基于 N 个批次 × 第 K 张图创建 N 条 TitleTask。
+
+    - batch_ids: 用户选中的 N 个批次 ID（1-200 个，与前端 BATCH_PAGE_SIZE 对齐）
+    - image_index: 从每个批次中取第几张已完成任务的图（1-based）
+    - model: 多模态模型 ID（白名单）
+    - system_prompt: 覆盖默认地毯 system prompt
+    - max_tokens / temperature: 可选，None 表示用 ToAPIs 默认
+    """
+
+    batch_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        # 与前端批次选择 BATCH_PAGE_SIZE=200 对齐；超过 200 应该让前端分批
+        max_length=200,
+        description="待生成标题的批次 ID 列表（1-200 个）",
+    )
+    image_index: int = Field(..., ge=1, le=1000, description="从每个批次中取第几张图（1-based）")
+    model: SUPPORTED_TITLE_MODELS = "gemini-3.6-flash"
+    system_prompt: str = Field(
+        default=DEFAULT_CARPET_TITLE_SYSTEM_PROMPT,
+        min_length=1,
+        max_length=8000,
+        description="发送给模型的 system 指令；默认使用内置地毯模板",
+    )
+    max_tokens: Optional[int] = Field(default=None, ge=1, le=32768)
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+
+    @field_validator("batch_ids")
+    @classmethod
+    def validate_batch_ids(cls, v: list[str]) -> list[str]:
+        """校验每个 batch_id 非空且不含逗号（避免破坏 CSV）。"""
+        for bid in v:
+            if not bid or not bid.strip():
+                raise ValueError("batch_id 不能为空")
+            if "," in bid:
+                raise ValueError(f"batch_id 不得含逗号: {bid!r}")
+        return v
+
+
+class TitleTaskOut(BaseModel):
+    """TitleTask 输出结构。"""
+
+    id: int
+    source_task_id: Optional[int]
+    batch_id: str
+    source_image_url: str
+    model: str
+    extra_instructions: Optional[str]
+    max_tokens: Optional[int]
+    temperature: Optional[float]
+    status: str
+    title: Optional[str]
+    error_msg: Optional[str]
+    regenerated_count: int
+    created_at: datetime
+    completed_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class TitleGenerateResponse(BaseModel):
+    """批量标题生成响应：返回创建成功的 TitleTask 列表。"""
+
+    created: int = Field(..., description="实际创建的 TitleTask 数量")
+    skipped: int = Field(0, description="跳过的批次数量（如没有第 K 张图）")
+    title_tasks: list[TitleTaskOut] = Field(default_factory=list)
+    errors: list[dict] = Field(
+        default_factory=list,
+        description="跳过的批次及原因 [{batch_id, reason}]",
+    )
+
+
+class TitleRegenerateRequest(BaseModel):
+    """单条 TitleTask 重新生成请求：可覆盖 prompt / 模型 / 参数。"""
+
+    model: Optional[SUPPORTED_TITLE_MODELS] = None
+    system_prompt: Optional[str] = Field(default=None, min_length=1, max_length=8000)
+    max_tokens: Optional[int] = Field(default=None, ge=1, le=32768)
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+
+
+class TitleBatchImageItem(BaseModel):
+    """批次中一张已完成图片（用于前端"选第 K 张图"逻辑）。"""
+
+    index: int = Field(..., description="在该批次的 1-based 序号（按 id 升序）")
+    task_id: int
+    image_url: str
+
+
+class TitleBatchImagesResponse(BaseModel):
+    """单个批次中可作为底图的图片列表（仅含 status=completed 且 image_url 非空的任务）。"""
+
+    batch_id: str
+    images: list[TitleBatchImageItem]
+
+
+class TitleBatchDeleteRequest(BaseModel):
+    """批量删除 TitleTask 请求。"""
+
+    title_task_ids: list[int] = Field(..., min_length=1, max_length=500)
