@@ -5,6 +5,7 @@ import {
   deleteBatches,
   downloadImage,
   generateBatch,
+  getBatchStatus,
   listRecentBatches,
   regenerateTask,
   retryBatch,
@@ -30,6 +31,8 @@ import {
   isFsAccessSupported,
   pickDirectory,
   saveTasksToDirectory,
+  exportBatchesToDirectory,
+  type BatchExportProgress,
 } from '../lib/fsDownload'
 
 const POLL_INTERVAL_MS = 3000
@@ -89,6 +92,12 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
   const [dirDownloading, setDirDownloading] = useState(false)
   const [dirProgress, setDirProgress] = useState<
     { done: number; total: number; current: number } | null
+  >(null)
+  // 多批次批量导出到文件夹（每个批次一个子文件夹）
+  const [batchesExporting, setBatchesExporting] = useState(false)
+  const [batchesExportProgress, setBatchesExportProgress] = useState<
+    | (Pick<BatchExportProgress, 'done' | 'total' | 'currentBatch' | 'currentFile' | 'fileTotal' | 'skipped'>)
+    | null
   >(null)
 
   // 批次轮询抽到 useBatchPolling hook
@@ -369,6 +378,154 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
     }
   }
 
+  /**
+   * 多批次批量导出到文件夹：每个批次一个子文件夹（子文件夹名 = batch_id）。
+   *
+   * 流程：
+   *  1. 拉取每个 batch 的 completed 图片（按 batch.status 调用 getBatchStatus）
+   *  2. 让用户选择父目录
+   *  3. 顺序处理每个批次：检查子文件夹是否非空 → 弹窗询问 → 写入
+   *  4. 汇总：成功 X 个 / 跳过 Y 个 / 失败 Z 个
+   */
+  const handleExportSelectedBatchesToDir = async () => {
+    if (selectedBatches.size === 0) return
+    if (!isFsAccessSupported()) {
+      setError('当前浏览器不支持文件夹直存，请改用 Chrome / Edge / Opera')
+      return
+    }
+
+    // 1. 让用户先选父目录（避免拉了一堆 batch 状态后用户取消）
+    let dirHandle: FileSystemDirectoryHandle
+    try {
+      const picked = await pickDirectory()
+      if (!picked) {
+        setError('未选择目录')
+        return
+      }
+      dirHandle = picked
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return
+      setError(err instanceof Error ? err.message : '选择目录失败')
+      return
+    }
+
+    const ids = Array.from(selectedBatches)
+    setBatchesExporting(true)
+    setBatchesExportProgress({ done: 0, total: ids.length, currentBatch: '', currentFile: 0, fileTotal: 0, skipped: false })
+    setError(null)
+
+    const lines: string[] = []
+    let doneBatches = 0
+    let conflictBatchNames: string[] = [] // 记录本轮被跳过的批次，避免用户重复触发
+
+    try {
+      for (const batchId of ids) {
+        const batchName = displayBatchId(batchId)
+        setBatchesExportProgress((p) =>
+          p
+            ? { ...p, currentBatch: batchName, currentFile: 0, fileTotal: 0, skipped: false }
+            : p
+        )
+
+        // 2. 拉批次状态拿已完成图片
+        let status: BatchStatusResponse
+        try {
+          status = await getBatchStatus(batchId)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : '查询批次状态失败'
+          lines.push(`[${batchName}] 查询失败：${msg}`)
+          doneBatches++
+          setBatchesExportProgress((p) =>
+            p ? { ...p, done: doneBatches } : p
+          )
+          continue
+        }
+
+        const items = status.tasks
+          .map((task, index) => ({ task, index }))
+          .filter(
+            ({ task }) => task.status === 'completed' && task.image_url
+          )
+
+        setBatchesExportProgress((p) =>
+          p
+            ? { ...p, currentBatch: batchName, currentFile: 0, fileTotal: items.length }
+            : p
+        )
+
+        // 3. 走 exportBatchesToDirectory（处理子文件夹创建 + 冲突询问 + 写入）
+        const result = await exportBatchesToDirectory(
+          [{ batchName, items }],
+          dirHandle,
+          {
+            onConflict: (name) => {
+              // per-batch confirm：是=覆盖，否=跳过
+              // 注：window.confirm 不阻塞事件循环，但因为是同步 API，
+              //     在 async 函数中表现为"立即 resolve"，UX 正常
+              return window.confirm(
+                `子文件夹 "${name}" 已存在且不为空，是否覆盖？\n\n` +
+                  `点"确定" = 清空后下载\n点"取消" = 跳过该批次`
+              )
+                ? 'overwrite'
+                : 'skip'
+            },
+            onProgress: (p) => {
+              setBatchesExportProgress({
+                done: p.done,
+                total: p.total,
+                currentBatch: p.currentBatch,
+                currentFile: p.currentFile,
+                fileTotal: p.fileTotal,
+                skipped: p.skipped,
+              })
+            },
+          }
+        )
+
+        // 4. 汇总本批结果
+        const detail = result.details[0]
+        if (detail) {
+          if (detail.skipped) {
+            lines.push(`[${detail.batchName}] 跳过（${detail.reason ?? ''}）`)
+            if (detail.reason === '用户选择跳过') {
+              conflictBatchNames.push(detail.batchName)
+            }
+          } else if (detail.failed > 0) {
+            const head = detail.errors.slice(0, 2).join('；')
+            lines.push(
+              `[${detail.batchName}] 部分失败 ${detail.success}/${detail.total}` +
+                (head ? `（例：${head}）` : '')
+            )
+          } else {
+            lines.push(`[${detail.batchName}] 成功 ${detail.success} 张`)
+          }
+        }
+
+        doneBatches++
+        setBatchesExportProgress((p) =>
+          p ? { ...p, done: doneBatches } : p
+        )
+      }
+
+      // 5. 显示汇总
+      const summary = `批量导出完成：共 ${ids.length} 个批次\n` + lines.join('\n')
+      setError(summary)
+      if (conflictBatchNames.length > 0) {
+        // 额外追加一行提醒（用 setTimeout 避免覆盖前面的汇总）
+        setTimeout(() => {
+          setError(
+            (prev) =>
+              (prev ? prev + '\n' : '') +
+              `被跳过的批次：${conflictBatchNames.join('、')}`
+          )
+        }, 50)
+      }
+    } finally {
+      setBatchesExporting(false)
+      setBatchesExportProgress(null)
+    }
+  }
+
   const toggleTaskSelection = (taskId: number) => {
     setSelectedTasks((prev) => {
       const next = new Set(prev)
@@ -628,6 +785,43 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
                   ? '取消全选'
                   : '全选'}
               </button>
+              <button
+                type="button"
+                onClick={handleExportSelectedBatchesToDir}
+                disabled={selectedBatches.size === 0 || batchesExporting}
+                style={{
+                  padding: '0.4rem 0.8rem',
+                  background:
+                    selectedBatches.size === 0 || batchesExporting
+                      ? undefined
+                      : '#2563eb',
+                  color:
+                    selectedBatches.size === 0 || batchesExporting
+                      ? undefined
+                      : '#fff',
+                }}
+                title={
+                  isFsAccessSupported()
+                    ? `将已选中的 ${selectedBatches.size} 个批次按 batch_id 分目录导出到本地`
+                    : '当前浏览器不支持文件夹直存，请使用 Chrome / Edge / Opera'
+                }
+              >
+                {batchesExporting
+                  ? `导出中 ${
+                      batchesExportProgress
+                        ? `${batchesExportProgress.done}/${batchesExportProgress.total}`
+                        : ''
+                    }`
+                  : `导出已选到文件夹 (${selectedBatches.size})`}
+              </button>
+              {batchesExporting && batchesExportProgress && (
+                <span className="hint" style={{ fontSize: '0.8rem' }}>
+                  {batchesExportProgress.currentBatch}
+                  {batchesExportProgress.fileTotal > 0 &&
+                    ` · ${batchesExportProgress.currentFile}/${batchesExportProgress.fileTotal}`}
+                  {batchesExportProgress.skipped && ' · 跳过'}
+                </span>
+              )}
               <button
                 type="button"
                 onClick={handleDeleteSelectedBatches}
