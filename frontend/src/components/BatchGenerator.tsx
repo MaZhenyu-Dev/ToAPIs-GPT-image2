@@ -475,14 +475,23 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
                 : 'skip'
             },
             onProgress: (p) => {
-              setBatchesExportProgress({
-                done: p.done,
-                total: p.total,
-                currentBatch: p.currentBatch,
-                currentFile: p.currentFile,
-                fileTotal: p.fileTotal,
-                skipped: p.skipped,
-              })
+              // 关键：保留外层的 total 和 done 累计，只更新当前批次内部信息
+              // 原因：内层 exportBatchesToDirectory 每次只传 1 个 batch，
+              //       它的 total 恒为 1、done 仅在 0~1 之间，会把外层累计的
+              //       done/total 覆盖掉，导致进度条一直 0% 或闪 100%。
+              // done 的推进交给外层循环 doneBatches++ 完成。
+              setBatchesExportProgress((prev) =>
+                prev
+                  ? {
+                      done: prev.done, // 外层累计，由 doneBatches++ 推进
+                      total: prev.total, // 外层总批次数，循环开始时已固定
+                      currentBatch: p.currentBatch,
+                      currentFile: p.currentFile,
+                      fileTotal: p.fileTotal,
+                      skipped: p.skipped,
+                    }
+                  : prev
+              )
             },
           }
         )
