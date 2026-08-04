@@ -4,7 +4,7 @@ import csv
 import io
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -104,7 +104,6 @@ async def get_batch_title_images(
 )
 async def generate_titles(
     request: TitleGenerateRequest,
-    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """核心流程：
@@ -112,7 +111,8 @@ async def generate_titles(
     1. 对每个 batch_id，取其「已完成 + image_url 非空」任务的列表；
     2. 取第 ``image_index`` 张图作为底图；
     3. 若该批次图数 < image_index → 跳过并在 errors 中说明；
-    4. 为每条成功解析的图创建 TitleTask（pending），挂到 BackgroundTasks 并发调用。
+    4. 为每条成功解析的图创建 TitleTask（pending），通过 ``asyncio.create_task``
+       并发调用（信号量 ``MAX_CONCURRENT_TITLE_GENERATIONS`` 限流）。
 
     约束：
     - ``MAX_CONCURRENT_TITLE_GENERATIONS`` 信号量在 service 层控制并发；
@@ -152,7 +152,8 @@ async def generate_titles(
             temperature=request.temperature,
             regenerated_count=0,
         )
-        schedule_title_generation(background, title_task)
+        # 通过 asyncio.create_task 真正并发执行（不再用 BackgroundTasks 串行化）
+        schedule_title_generation(None, title_task)
         title_tasks.append(title_task)
 
     return TitleGenerateResponse(
@@ -173,13 +174,12 @@ async def generate_titles(
 async def regenerate_title(
     title_task_id: int,
     request: TitleRegenerateRequest,
-    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """以旧 TitleTask 的源任务为基准，新建一条 TitleTask 记录（regenerated_count + 1）。
 
     - 旧记录保留（审计 + 导出 CSV 时能拿到历史结果）
-    - 新记录初始 status=pending，挂到 BackgroundTasks 异步生成
+    - 新记录初始 status=pending，通过 ``asyncio.create_task`` 异步生成
     - 可选覆盖 model / system_prompt / max_tokens / temperature（不传则沿用旧的）
     """
     old = await crud.get_title_task_by_id(db, title_task_id)
@@ -225,7 +225,7 @@ async def regenerate_title(
     )
 
     schedule_regenerate(
-        background,
+        None,
         new_task,
         model=new_model,
         system_prompt=new_system_prompt,

@@ -5,8 +5,9 @@
 - 全局信号量 ``MAX_CONCURRENT_TITLE_GENERATIONS`` 控制同时在飞的请求数，
   避免触发 ToAPIs 429。
 - 失败不会影响其他任务，错误信息会写到 title_task.error_msg。
-- 后台任务用 ``BackgroundTasks`` 调度，立即返回 TitleTask 列表给前端，
-  前端通过轮询 /api/title-tasks 拉最新状态。
+- **并发调度**：使用 ``asyncio.create_task`` 把每个 TitleTask 挂到事件循环里
+  独立运行，**不要**用 FastAPI ``BackgroundTasks``——后者是 ``for/await`` 顺序
+  执行，会让 N 条标题串行排队生成（参见 _generate_one 注释）。
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ import asyncio
 import logging
 from typing import Optional
 
-from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import settings
@@ -107,79 +107,108 @@ async def _generate_one(
     """单个 TitleTask 的生成逻辑：发请求 → 写库。
 
     独立 session，失败不影响其他任务，最后一定把状态推进到 completed/failed。
-    """
-    sem = _get_semaphore()
-    async with sem:
-        # 标记为 in_progress（独立 session，避免与请求方的事务冲突）
-        async with AsyncSessionLocal() as db:
-            title_task = await crud.get_title_task_by_id(db, title_task_id)
-            if title_task is None:
-                logger.warning("TitleTask %s 已不存在，跳过", title_task_id)
-                return
-            await crud.mark_title_task_in_progress(db, title_task)
 
-        # 实际调用 ToAPIs
+    顶层 try/except 是兜底：任何未被内层 try 捕获的异常（DB 写失败、
+    asyncio 取消等）都会被捕获并把任务标为 failed，避免 asyncio 抛
+    "Task exception was never retrieved" 警告。
+    """
+    try:
+        sem = _get_semaphore()
+        async with sem:
+            # 标记为 in_progress（独立 session，避免与请求方的事务冲突）
+            async with AsyncSessionLocal() as db:
+                title_task = await crud.get_title_task_by_id(db, title_task_id)
+                if title_task is None:
+                    logger.warning("TitleTask %s 已不存在，跳过", title_task_id)
+                    return
+                await crud.mark_title_task_in_progress(db, title_task)
+
+            # 实际调用 ToAPIs
+            try:
+                messages = build_title_messages(system_prompt, image_url)
+                payload = await client.chat_completion(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    timeout=120,  # 标题生成通常 < 30s，给 2 分钟兜底
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("TitleTask %s 调用 ToAPIs 失败: %s", title_task_id, exc)
+                async with AsyncSessionLocal() as db:
+                    title_task = await crud.get_title_task_by_id(db, title_task_id)
+                    if title_task is not None:
+                        await crud.update_title_task_result(
+                            db, title_task,
+                            status="failed",
+                            error_msg=str(exc) or exc.__class__.__name__,
+                        )
+                return
+
+            content = extract_assistant_content(payload)
+            if not content:
+                err = "模型返回内容为空"
+                logger.warning("TitleTask %s %s，原始 payload=%s", title_task_id, err, payload)
+                async with AsyncSessionLocal() as db:
+                    title_task = await crud.get_title_task_by_id(db, title_task_id)
+                    if title_task is not None:
+                        await crud.update_title_task_result(
+                            db, title_task, status="failed", error_msg=err
+                        )
+                return
+
+            # 落库 completed
+            async with AsyncSessionLocal() as db:
+                title_task = await crud.get_title_task_by_id(db, title_task_id)
+                if title_task is not None:
+                    await crud.update_title_task_result(
+                        db, title_task, status="completed", title=content
+                    )
+        logger.info("TitleTask %s 标题生成成功，长度=%d", title_task_id, len(content))
+    except Exception as exc:  # noqa: BLE001
+        # 兜底：捕获所有未被内层处理的异常（含 DB 失败、asyncio.CancelledError
+        # 之外的取消等），把任务标为 failed，避免事件循环报未检索任务异常。
+        logger.exception("TitleTask %s 未捕获异常: %s", title_task_id, exc)
         try:
-            messages = build_title_messages(system_prompt, image_url)
-            payload = await client.chat_completion(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                timeout=120,  # 标题生成通常 < 30s，给 2 分钟兜底
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("TitleTask %s 调用 ToAPIs 失败: %s", title_task_id, exc)
             async with AsyncSessionLocal() as db:
                 title_task = await crud.get_title_task_by_id(db, title_task_id)
                 if title_task is not None:
                     await crud.update_title_task_result(
                         db, title_task,
                         status="failed",
-                        error_msg=str(exc) or exc.__class__.__name__,
+                        error_msg=f"未捕获异常: {exc}",
                     )
-            return
-
-        content = extract_assistant_content(payload)
-        if not content:
-            err = "模型返回内容为空"
-            logger.warning("TitleTask %s %s，原始 payload=%s", title_task_id, err, payload)
-            async with AsyncSessionLocal() as db:
-                title_task = await crud.get_title_task_by_id(db, title_task_id)
-                if title_task is not None:
-                    await crud.update_title_task_result(
-                        db, title_task, status="failed", error_msg=err
-                    )
-            return
-
-        # 落库 completed
-        async with AsyncSessionLocal() as db:
-            title_task = await crud.get_title_task_by_id(db, title_task_id)
-            if title_task is not None:
-                await crud.update_title_task_result(
-                    db, title_task, status="completed", title=content
-                )
-        logger.info("TitleTask %s 标题生成成功，长度=%d", title_task_id, len(content))
+        except Exception:
+            logger.exception("TitleTask %s 写入失败状态时再次异常", title_task_id)
 
 
 def schedule_title_generation(
-    background: BackgroundTasks,
+    background,  # 保留兼容参数（路由层可能传 BackgroundTasks），实际不使用
     title_task: TitleTask,
 ) -> None:
-    """把单个 TitleTask 的生成逻辑挂到 FastAPI BackgroundTasks。"""
-    background.add_task(
-        _generate_one,
-        title_task_id=title_task.id,
-        model=title_task.model,
-        system_prompt=title_task.prompt_snapshot,
-        image_url=title_task.source_image_url,
-        max_tokens=title_task.max_tokens,
-        temperature=title_task.temperature,
+    """把单个 TitleTask 的生成逻辑挂到事件循环。
+
+    **重要**：必须用 ``asyncio.create_task`` 而不是 ``background.add_task``。
+    FastAPI 的 ``BackgroundTasks`` 在响应后是 ``for/await`` 顺序执行所有任务，
+    会让 N 条标题串行生成；用 ``asyncio.create_task`` 可以让 N 条任务真正并发飞。
+
+    调用方必须在事件循环内（async router 函数里），本函数是同步的。
+    """
+    _ = background  # 显式忽略，避免 lint 警告
+    asyncio.create_task(
+        _generate_one(
+            title_task_id=title_task.id,
+            model=title_task.model,
+            system_prompt=title_task.prompt_snapshot,
+            image_url=title_task.source_image_url,
+            max_tokens=title_task.max_tokens,
+            temperature=title_task.temperature,
+        )
     )
 
 
 def schedule_regenerate(
-    background: BackgroundTasks,
+    background,  # 保留兼容参数，实际不使用
     title_task: TitleTask,
     *,
     model: str,
@@ -187,15 +216,20 @@ def schedule_regenerate(
     max_tokens: Optional[int],
     temperature: Optional[float],
 ) -> None:
-    """重新生成：调用前先把 regenerated_count 写到 title_task（已由调用方 commit）。"""
-    background.add_task(
-        _generate_one,
-        title_task_id=title_task.id,
-        model=model,
-        system_prompt=system_prompt,
-        image_url=title_task.source_image_url,
-        max_tokens=max_tokens,
-        temperature=temperature,
+    """重新生成：调用前先把 regenerated_count 写到 title_task（已由调用方 commit）。
+
+    同 ``schedule_title_generation``，用 ``asyncio.create_task`` 触发并发。
+    """
+    _ = background
+    asyncio.create_task(
+        _generate_one(
+            title_task_id=title_task.id,
+            model=model,
+            system_prompt=system_prompt,
+            image_url=title_task.source_image_url,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
     )
 
 
