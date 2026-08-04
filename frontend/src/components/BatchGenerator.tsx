@@ -32,7 +32,6 @@ import {
   pickDirectory,
   saveTasksToDirectory,
   exportBatchesToDirectory,
-  type BatchExportProgress,
 } from '../lib/fsDownload'
 
 const POLL_INTERVAL_MS = 3000
@@ -94,11 +93,17 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
     { done: number; total: number; current: number } | null
   >(null)
   // 多批次批量导出到文件夹（每个批次一个子文件夹）
+  type BatchExportProgressState = {
+    done: number
+    total: number
+    currentBatch: string
+    currentFile: number
+    fileTotal: number
+    skipped: boolean
+  }
   const [batchesExporting, setBatchesExporting] = useState(false)
-  const [batchesExportProgress, setBatchesExportProgress] = useState<
-    | (Pick<BatchExportProgress, 'done' | 'total' | 'currentBatch' | 'currentFile' | 'fileTotal' | 'skipped'>)
-    | null
-  >(null)
+  const [batchesExportProgress, setBatchesExportProgress] =
+    useState<BatchExportProgressState | null>(null)
 
   // 批次轮询抽到 useBatchPolling hook
   const { fetchOnce, startPolling, clearPolling } = useBatchPolling({
@@ -815,12 +820,9 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
                   : `导出已选到文件夹 (${selectedBatches.size})`}
               </button>
               {batchesExporting && batchesExportProgress && (
-                <span className="hint" style={{ fontSize: '0.8rem' }}>
-                  {batchesExportProgress.currentBatch}
-                  {batchesExportProgress.fileTotal > 0 &&
-                    ` · ${batchesExportProgress.currentFile}/${batchesExportProgress.fileTotal}`}
-                  {batchesExportProgress.skipped && ' · 跳过'}
-                </span>
+                <BatchExportProgressView
+                  progress={batchesExportProgress}
+                />
               )}
               <button
                 type="button"
@@ -1508,6 +1510,94 @@ function ProgressBar({
           animation: animated ? 'pulse 1.5s infinite' : undefined,
         }}
       />
+    </div>
+  )
+}
+
+/**
+ * 多批次批量导出进度视图。
+ *
+ * 双层进度：
+ *  - 蓝色上层：批次总进度 done/total（百分比 + 文字）
+ *  - 绿色下层：当前批次内的文件进度 currentFile/fileTotal（仅在 fileTotal > 0 时显示）
+ *
+ * 布局：在外层 flex 容器里用 ``flexBasis: '100%'`` 强制换行到按钮下方占满整行，
+ *       进度文字与进度条各占一行，整体高度 < 80px，不影响列表布局。
+ */
+function BatchExportProgressView({
+  progress,
+}: {
+  progress: {
+    done: number
+    total: number
+    currentBatch: string
+    currentFile: number
+    fileTotal: number
+    skipped: boolean
+  }
+}) {
+  // 批次总进度：0-100 的整数百分比
+  const totalPct =
+    progress.total > 0
+      ? Math.round((progress.done / progress.total) * 100)
+      : 0
+  // 当前批次文件进度：仅在有文件时计算
+  const filePct =
+    progress.fileTotal > 0
+      ? Math.round((progress.currentFile / progress.fileTotal) * 100)
+      : 0
+  return (
+    <div
+      style={{
+        flexBasis: '100%',
+        marginTop: '0.5rem',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.4rem',
+      }}
+    >
+      {/* 上层：批次总进度 */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          fontSize: '0.8rem',
+        }}
+      >
+        <span className="hint">
+          {progress.currentBatch || '准备中…'}
+          {progress.skipped && (
+            <span style={{ color: '#f59e0b', marginLeft: '0.4rem' }}>· 跳过</span>
+          )}
+        </span>
+        <span className="hint">
+          {progress.done}/{progress.total} 批次 · <strong>{totalPct}%</strong>
+        </span>
+      </div>
+      <ProgressBar progress={totalPct} color="#2563eb" />
+
+      {/* 下层：当前批次文件进度（仅在有文件时显示） */}
+      {progress.fileTotal > 0 && (
+        <>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              fontSize: '0.75rem',
+              marginTop: '0.2rem',
+            }}
+          >
+            <span className="hint">当前批次文件</span>
+            <span className="hint">
+              {progress.currentFile}/{progress.fileTotal} ·{' '}
+              <strong>{filePct}%</strong>
+            </span>
+          </div>
+          <ProgressBar progress={filePct} color="#16a34a" />
+        </>
+      )}
     </div>
   )
 }
