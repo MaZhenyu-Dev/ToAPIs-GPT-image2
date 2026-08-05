@@ -16,6 +16,7 @@ import type {
   TitleBatchImagesResponse,
   TitleGenerateRequest,
   TitleGenerateResponse,
+  TitlePromptsResponse,
   TitleRegenerateRequest,
   TitleTask,
   TodayBatchCount,
@@ -298,6 +299,12 @@ export function regenerateTitle(
       body: JSON.stringify(payload),
     }
   )
+}
+
+export function fetchTitlePrompts(): Promise<TitlePromptsResponse> {
+  // 拉取 3 个地毯类型对应的 prompt 模板和中文标签
+  // 失败兜底：返回空 dict，由调用方决定是否退化到内置默认
+  return fetchJson<TitlePromptsResponse>('/api/title-tasks/prompts')
 }
 
 export function deleteTitleTask(titleTaskId: number): Promise<{ deleted: number; id: number }> {

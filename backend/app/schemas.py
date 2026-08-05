@@ -3,6 +3,8 @@ from datetime import datetime
 from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .prompts import CARPET_PROMPTS, CARPET_TYPE_LABELS
+
 # 批次号 prefix 校验：仅允许 A-Z / 0-9，长度 1-10
 BATCH_PREFIX_PATTERN = re.compile(r"^[A-Z0-9]{1,10}$")
 
@@ -386,30 +388,19 @@ SUPPORTED_TITLE_MODELS = Literal[
     "gpt-5.6-sol",
 ]
 
-# 默认地毯标题 system prompt（电商标题场景，temu 全托模式）
-# 用户可在前端覆盖，但默认用此模板足以覆盖大多数场景。
-DEFAULT_CARPET_TITLE_SYSTEM_PROMPT = (
-    "你是一名专业的电商店铺标题优化专家。请根据用户提供的商品图片，"
-    "生成 1 条适合 temu 平台全托模式的电商标题，要求：\n"
-    "1. 开头固定为「JIT 天鹅绒 850g」；\n"
-    "2. 后续依次覆盖：地毯图案描述 + 材质特点 + 地毯卖点 + 使用场景 + 推荐购买词；\n"
-    "3. 用优秀的电商标题特点（卖点前置、节奏感强、关键词密度高）润色；\n"
-    "4. 严禁使用以下 temu 平台高风险词：Best, Top, No.1, The Cheapest, #1, "
-    "Ultimate, The Only, Perfect, All-Time Favorite, Most Popular, Best Seller, "
-    "100% Waterproof, Never Fade, Anti-Allergy, Hypoallergenic, Medical Grade, "
-    "Cure, Treat, Heal, Miracle, 3D；\n"
-    "5. 严禁出现「儿童」「宝宝」等任何与儿童相关的内容；\n"
-    "6. 不要输出任何解释、编号、引号或前后缀，只输出最终标题文本本身。"
-)
+# 地毯类型：决定使用哪份内置 prompt（corridor=走廊, living_room=客厅, general=通用）
+# 详细 prompt 在 backend/app/prompts/*.md，启动时由 prompts.__init__ 加载到 CARPET_PROMPTS
+CARPET_TYPES = Literal["corridor", "living_room", "general"]
 
 
 class TitleGenerateRequest(BaseModel):
     """批量标题生成请求：基于 N 个批次 × 第 K 张图创建 N 条 TitleTask。
 
     - batch_ids: 用户选中的 N 个批次 ID（1-200 个，与前端 BATCH_PAGE_SIZE 对齐）
+    - carpet_type: 地毯类型，决定使用哪份内置 prompt（corridor / living_room / general）
     - image_index: 从每个批次中取第几张已完成任务的图（1-based）
     - model: 多模态模型 ID（白名单）
-    - system_prompt: 覆盖默认地毯 system prompt
+    - system_prompt: 覆盖默认 system prompt；不传或为空时使用 carpet_type 对应的内置 prompt
     - max_tokens / temperature: 可选，None 表示用 ToAPIs 默认
     """
 
@@ -420,13 +411,21 @@ class TitleGenerateRequest(BaseModel):
         max_length=200,
         description="待生成标题的批次 ID 列表（1-200 个）",
     )
+    carpet_type: CARPET_TYPES = Field(
+        default="general",
+        description=(
+            "地毯类型：corridor(走廊) / living_room(客厅) / general(通用)，"
+            "决定使用哪份内置 prompt"
+        ),
+    )
     image_index: int = Field(..., ge=1, le=1000, description="从每个批次中取第几张图（1-based）")
     model: SUPPORTED_TITLE_MODELS = "gemini-3.6-flash"
-    system_prompt: str = Field(
-        default=DEFAULT_CARPET_TITLE_SYSTEM_PROMPT,
-        min_length=1,
-        max_length=8000,
-        description="发送给模型的 system 指令；默认使用内置地毯模板",
+    system_prompt: Optional[str] = Field(
+        default=None,
+        description=(
+            "发送给模型的 system 指令；不传或为空时，"
+            "使用 carpet_type 对应的内置 prompt"
+        ),
     )
     max_tokens: Optional[int] = Field(default=None, ge=1, le=32768)
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
@@ -441,6 +440,27 @@ class TitleGenerateRequest(BaseModel):
             if "," in bid:
                 raise ValueError(f"batch_id 不得含逗号: {bid!r}")
         return v
+
+    @field_validator("system_prompt")
+    @classmethod
+    def validate_system_prompt_length(cls, v):
+        """system_prompt 留空/空字符串都是允许的（= 用 carpet_type 内置 prompt），
+        但非空时必须满足 1~8000 字符。
+        """
+        if v is None:
+            return v
+        if not v.strip():
+            return None  # 空字符串归一为 None，方便后续 model_validator 判断
+        if len(v) > 8000:
+            raise ValueError(f"system_prompt 超过 8000 字符限制（实际 {len(v)}）")
+        return v
+
+    @model_validator(mode="after")
+    def resolve_default_system_prompt(self):
+        """若 user 没传 system_prompt，用 carpet_type 对应的内置 prompt 填充。"""
+        if not self.system_prompt:
+            self.system_prompt = CARPET_PROMPTS[self.carpet_type]
+        return self
 
 
 class TitleTaskOut(BaseModel):
@@ -478,12 +498,35 @@ class TitleGenerateResponse(BaseModel):
 
 
 class TitleRegenerateRequest(BaseModel):
-    """单条 TitleTask 重新生成请求：可覆盖 prompt / 模型 / 参数。"""
+    """单条 TitleTask 重新生成请求：可覆盖地毯类型 / 模型 / prompt / 参数。
 
+    - 优先顺序：自定义 system_prompt > carpet_type 内置 prompt > 沿用旧任务
+    - 不传 carpet_type 也不传 system_prompt 时，沿用旧 TitleTask 的 prompt_snapshot
+    """
+
+    carpet_type: Optional[CARPET_TYPES] = Field(
+        default=None,
+        description=(
+            "可选：地毯类型，提供后用对应内置 prompt 作为默认；"
+            "不传则继续使用旧任务记录的 prompt"
+        ),
+    )
     model: Optional[SUPPORTED_TITLE_MODELS] = None
-    system_prompt: Optional[str] = Field(default=None, min_length=1, max_length=8000)
+    system_prompt: Optional[str] = Field(default=None, description="可选：自定义 system prompt")
     max_tokens: Optional[int] = Field(default=None, ge=1, le=32768)
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+
+    @field_validator("system_prompt")
+    @classmethod
+    def validate_system_prompt_length(cls, v):
+        """system_prompt 留空/空字符串 = None（用 carpet_type 或沿用旧任务）。"""
+        if v is None:
+            return v
+        if not v.strip():
+            return None
+        if len(v) > 8000:
+            raise ValueError(f"system_prompt 超过 8000 字符限制（实际 {len(v)}）")
+        return v
 
 
 class TitleBatchImageItem(BaseModel):

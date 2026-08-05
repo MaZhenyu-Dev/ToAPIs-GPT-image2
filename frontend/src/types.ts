@@ -184,6 +184,9 @@ export interface TitleModelOption {
   description: string
 }
 
+// 地毯类型：决定使用哪份内置 prompt（与后端 CARPET_TYPES 对齐）
+export type CarpetType = 'corridor' | 'living_room' | 'general'
+
 // 单条 TitleTask
 export interface TitleTask {
   id: number
@@ -217,6 +220,7 @@ export interface TitleBatchImagesResponse {
 // 批量生成请求
 export interface TitleGenerateRequest {
   batch_ids: string[]
+  carpet_type?: CarpetType // 新增：地毯类型（默认 'general'）
   image_index: number
   model: TitleModelId
   system_prompt?: string
@@ -234,6 +238,7 @@ export interface TitleGenerateResponse {
 
 // 重新生成请求
 export interface TitleRegenerateRequest {
+  carpet_type?: CarpetType // 新增：地毯类型（不传则沿用旧任务的 prompt）
   model?: TitleModelId
   system_prompt?: string
   max_tokens?: number | null
@@ -243,4 +248,10 @@ export interface TitleRegenerateRequest {
 // 批量删除请求
 export interface TitleBatchDeleteRequest {
   title_task_ids: number[]
+}
+
+// 地毯类型 → prompt 模板和中文标签（来自 GET /api/title-tasks/prompts）
+export interface TitlePromptsResponse {
+  prompts: Record<CarpetType, string>
+  labels: Record<CarpetType, string>
 }

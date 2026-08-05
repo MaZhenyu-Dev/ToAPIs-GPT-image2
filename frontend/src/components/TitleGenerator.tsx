@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   deleteTitleTask,
   exportTitlesCsv,
+  fetchTitlePrompts,
   generateTitles,
   getBatchTitleImages,
   listRecentBatches,
@@ -9,20 +10,28 @@ import {
   regenerateTitle,
 } from '../api'
 import {
+  CARPET_TYPE_FALLBACK_LABELS,
   DEFAULT_CARPET_TITLE_SYSTEM_PROMPT,
+  DEFAULT_CARPET_TYPE,
   MAX_TOKENS_OPTIONS,
+  TITLE_CARPET_TYPE_STORAGE_KEY,
   TITLE_MODEL_OPTIONS,
   TITLE_POLL_INTERVAL_MS,
+  TITLE_PROMPT_DIRTY_STORAGE_KEY,
   TITLE_PROMPT_STORAGE_KEY,
 } from '../constants'
 import type {
   BatchListResponse,
   BatchSummary,
+  CarpetType,
   TitleBatchImageItem,
   TitleModelId,
   TitleTask,
 } from '../types'
 import ImagePreview from './ImagePreview'
+
+// 地毯类型候选值（与后端 CARPET_TYPES 对齐，用于遍历渲染单选按钮）
+const CARPET_TYPE_OPTIONS: CarpetType[] = ['corridor', 'living_room', 'general']
 
 const statusText: Record<string, string> = {
   pending: '排队中',
@@ -72,6 +81,30 @@ export default function TitleGenerator() {
   const [maxTokens, setMaxTokens] = useState<string>('8192')
   const [temperature, setTemperature] = useState<string>('0.7')
 
+  // 3.5 地毯类型 + 模板（决定使用哪份 prompt）
+  // - carpetType: 用户当前选中的地毯类型，从 localStorage 恢复
+  // - carpetPrompts: 后端 GET /api/title-tasks/prompts 返回的 3 份 prompt 模板
+  // - carpetLabels: 后端返回的中文标签（前端展示）
+  // - promptsLoading / promptsError: 拉取状态
+  // - systemPromptDirty: 用户是否手动编辑过 systemPrompt；
+  //   true 时切换地毯类型不会覆盖，false 时会自动套用对应类型的 prompt
+  const [carpetType, setCarpetType] = useState<CarpetType>(() => {
+    const stored = localStorage.getItem(TITLE_CARPET_TYPE_STORAGE_KEY)
+    if (stored === 'corridor' || stored === 'living_room' || stored === 'general') {
+      return stored
+    }
+    return DEFAULT_CARPET_TYPE
+  })
+  const [carpetPrompts, setCarpetPrompts] = useState<Partial<Record<CarpetType, string>>>({})
+  const [carpetLabels, setCarpetLabels] = useState<Record<CarpetType, string>>(
+    CARPET_TYPE_FALLBACK_LABELS as Record<CarpetType, string>
+  )
+  const [promptsLoading, setPromptsLoading] = useState(false)
+  const [promptsError, setPromptsError] = useState<string | null>(null)
+  const [systemPromptDirty, setSystemPromptDirty] = useState<boolean>(
+    () => localStorage.getItem(TITLE_PROMPT_DIRTY_STORAGE_KEY) === '1'
+  )
+
   // 4. 提交 / 结果
   const [submitting, setSubmitting] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -94,6 +127,53 @@ export default function TitleGenerator() {
   useEffect(() => {
     localStorage.setItem(TITLE_PROMPT_STORAGE_KEY, systemPrompt)
   }, [systemPrompt])
+
+  // 持久化 systemPromptDirty 标记
+  // - dirty=true → 写 '1'，下次切换地毯类型时不会覆盖用户的自定义内容
+  // - dirty=false → 删 key，恢复"未编辑"状态，切换地毯类型会自动套用对应 prompt
+  useEffect(() => {
+    if (systemPromptDirty) {
+      localStorage.setItem(TITLE_PROMPT_DIRTY_STORAGE_KEY, '1')
+    } else {
+      localStorage.removeItem(TITLE_PROMPT_DIRTY_STORAGE_KEY)
+    }
+  }, [systemPromptDirty])
+
+  // 挂载时拉取 3 个地毯类型对应的 prompt 模板和中文标签
+  // - 失败不阻塞 UI：carpetLabels 有 fallback，carpetPrompts 为空时用 DEFAULT_CARPET_TITLE_SYSTEM_PROMPT
+  // - 拉取成功后若用户没手动编辑过 systemPrompt，自动切到当前 carpetType 对应的 prompt
+  useEffect(() => {
+    let cancelled = false
+    setPromptsLoading(true)
+    setPromptsError(null)
+    fetchTitlePrompts()
+      .then((res) => {
+        if (cancelled) return
+        setCarpetPrompts(res.prompts || {})
+        if (res.labels) setCarpetLabels(res.labels)
+        // 拿到模板后，如果用户没编辑过 systemPrompt，
+        // 立即把当前选中的地毯类型对应 prompt 写进 textarea
+        // （注意这里用 functional update 读取最新 dirty，避免闭包过期）
+        setSystemPrompt((current) => {
+          const dirty = localStorage.getItem(TITLE_PROMPT_DIRTY_STORAGE_KEY) === '1'
+          if (dirty) return current
+          const target = res.prompts?.[carpetType]
+          return target || current
+        })
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setPromptsError(err instanceof Error ? err.message : '加载 prompt 模板失败')
+      })
+      .finally(() => {
+        if (!cancelled) setPromptsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+    // 仅挂载时执行一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // 加载批次（支持追加或重置）
   const loadBatches = useCallback(
@@ -229,6 +309,32 @@ export default function TitleGenerator() {
     })
   }
 
+  // 切换地毯类型：
+  // 1) 写 localStorage（持久化用户选择）
+  // 2) 若用户没手动编辑过 systemPrompt，则自动套用新类型对应的 prompt
+  //    否则保留用户已编辑的内容（避免误覆盖）
+  const handleCarpetTypeChange = (next: CarpetType) => {
+    if (next === carpetType) return
+    setCarpetType(next)
+    localStorage.setItem(TITLE_CARPET_TYPE_STORAGE_KEY, next)
+    if (!systemPromptDirty) {
+      const prompt = carpetPrompts[next]
+      if (prompt) {
+        setSystemPrompt(prompt)
+        // 自动套用的不算用户编辑，保持 dirty=false
+        setSystemPromptDirty(false)
+      }
+    }
+  }
+
+  // 把 systemPrompt 重置为"当前地毯类型"的默认模板
+  // - 同时清掉 dirty 标记，让用户可以再次通过切换地毯类型来自动切换
+  const handleResetSystemPrompt = () => {
+    const fallback = carpetPrompts[carpetType] || DEFAULT_CARPET_TITLE_SYSTEM_PROMPT
+    setSystemPrompt(fallback)
+    setSystemPromptDirty(false)
+  }
+
   // 轮询：把 pending/in_progress 的 TitleTask 拉最新状态
   const clearPolling = useCallback(() => {
     if (pollTimer.current) {
@@ -278,11 +384,13 @@ export default function TitleGenerator() {
     setSubmitting(true)
     setError(null)
     try {
+      const fallbackPrompt = carpetPrompts[carpetType] || DEFAULT_CARPET_TITLE_SYSTEM_PROMPT
       const payload = {
         batch_ids: Array.from(selectedBatchIds),
+        carpet_type: carpetType,
         image_index: imageIndex,
         model,
-        system_prompt: systemPrompt.trim() || DEFAULT_CARPET_TITLE_SYSTEM_PROMPT,
+        system_prompt: systemPrompt.trim() || fallbackPrompt,
         max_tokens: maxTokens ? Number(maxTokens) : null,
         temperature: temperature ? Number(temperature) : null,
       }
@@ -419,10 +527,19 @@ export default function TitleGenerator() {
   }
 
   // 重新生成单条
+  // - 传 carpet_type 让后端用当前选中的地毯类型对应 prompt
+  // - 若用户编辑过 systemPrompt，则把当前内容一并传过去覆盖
   const handleRegenerate = async (task: TitleTask) => {
     setError(null)
     try {
-      const updated = await regenerateTitle(task.id, {})
+      const fallbackPrompt = carpetPrompts[carpetType] || DEFAULT_CARPET_TITLE_SYSTEM_PROMPT
+      const updated = await regenerateTitle(task.id, {
+        carpet_type: carpetType,
+        // dirty=true 时传用户当前编辑的 prompt；否则不传，让后端用 carpet_type 的内置 prompt
+        system_prompt: systemPromptDirty
+          ? systemPrompt.trim() || fallbackPrompt
+          : undefined,
+      })
       setTitleTasks((prev) => {
         const map = new Map<number, TitleTask>()
         for (const t of prev) {
@@ -792,23 +909,119 @@ export default function TitleGenerator() {
           </div>
         </div>
 
-        {/* ---------- 4. System Prompt ---------- */}
+        {/* ---------- 4. 地毯类型（决定使用哪份内置 prompt） ---------- */}
         <div className="form-group">
-          <label htmlFor="systemPrompt">④ System Prompt（可编辑，会保存到浏览器本地）</label>
+          <label style={{ marginBottom: '0.4rem', display: 'block' }}>
+            ④ 地毯类型
+            {promptsLoading && (
+              <span className="hint" style={{ marginLeft: '0.5rem' }}>
+                （模板加载中…）
+              </span>
+            )}
+            {promptsError && (
+              <span
+                className="hint"
+                style={{ marginLeft: '0.5rem', color: '#dc2626' }}
+                title={promptsError}
+              >
+                ⚠ 模板加载失败，将使用内置默认 prompt
+              </span>
+            )}
+          </label>
+          <div
+            style={{
+              display: 'flex',
+              gap: '0.4rem',
+              flexWrap: 'wrap',
+              padding: '0.4rem 0.5rem',
+              background: '#f9fafb',
+              border: '1px solid #e5e7eb',
+              borderRadius: '6px',
+            }}
+          >
+            {CARPET_TYPE_OPTIONS.map((ct) => {
+              const checked = carpetType === ct
+              const label = carpetLabels[ct] || CARPET_TYPE_FALLBACK_LABELS[ct] || ct
+              const hasPrompt = !!carpetPrompts[ct]
+              return (
+                <label
+                  key={ct}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.35rem',
+                    padding: '0.3rem 0.7rem',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem',
+                    borderRadius: '6px',
+                    border: `1px solid ${checked ? '#2563eb' : '#e5e7eb'}`,
+                    background: checked ? '#eff6ff' : '#fff',
+                    color: checked ? '#1d4ed8' : '#374151',
+                    fontWeight: checked ? 500 : 400,
+                    transition: 'all 0.15s',
+                  }}
+                  title={
+                    hasPrompt
+                      ? `使用「${label}」对应的内置 prompt`
+                      : `「${label}」模板未加载，将使用内置默认 prompt`
+                  }
+                >
+                  <input
+                    type="radio"
+                    name="carpetType"
+                    value={ct}
+                    checked={checked}
+                    onChange={() => handleCarpetTypeChange(ct)}
+                    style={{ margin: 0 }}
+                  />
+                  {label}
+                </label>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* ---------- 5. System Prompt ---------- */}
+        <div className="form-group">
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              justifyContent: 'space-between',
+              gap: '0.5rem',
+              flexWrap: 'wrap',
+              marginBottom: '0.25rem',
+            }}
+          >
+            <label htmlFor="systemPrompt">
+              ⑤ System Prompt（可编辑；当前：{carpetLabels[carpetType] || '通用'}）
+            </label>
+            <span className="hint" style={{ fontSize: '0.75rem' }}>
+              {systemPromptDirty ? (
+                <span style={{ color: '#d97706' }}>● 已自定义，切换地毯类型不会覆盖</span>
+              ) : (
+                <span style={{ color: '#16a34a' }}>● 使用「{carpetLabels[carpetType] || '通用'}」内置模板</span>
+              )}
+            </span>
+          </div>
           <textarea
             id="systemPrompt"
             value={systemPrompt}
-            onChange={(e) => setSystemPrompt(e.target.value)}
+            onChange={(e) => {
+              setSystemPrompt(e.target.value)
+              setSystemPromptDirty(true)
+            }}
             rows={6}
             style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}
-            placeholder="留空则使用默认地毯标题模板"
+            placeholder="留空则使用当前地毯类型对应的内置 prompt"
           />
           <button
             type="button"
-            onClick={() => setSystemPrompt(DEFAULT_CARPET_TITLE_SYSTEM_PROMPT)}
+            onClick={handleResetSystemPrompt}
             style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem', marginTop: '0.25rem' }}
+            title={`把 prompt 重置为「${carpetLabels[carpetType] || '通用'}」内置模板`}
           >
-            恢复默认模板
+            恢复「{carpetLabels[carpetType] || '通用'}」默认模板
           </button>
         </div>
 

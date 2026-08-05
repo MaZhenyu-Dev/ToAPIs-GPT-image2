@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.crud import title_tasks as crud
 from backend.app.database import get_db
 from backend.app.models import TitleTask
+from backend.app.prompts import CARPET_PROMPTS, CARPET_TYPE_LABELS
 from backend.app.schemas import (
     TitleBatchDeleteRequest,
     TitleBatchImageItem,
@@ -27,6 +28,36 @@ from backend.app.services.title_generator import (
 )
 
 router = APIRouter(prefix="/title-tasks", tags=["title-tasks"])
+
+
+# ---------- prompt 模板查询（前端用）----------
+
+@router.get(
+    "/prompts",
+    summary="获取 3 个地毯类型对应的 prompt 模板和中文标签",
+)
+async def get_title_prompts() -> dict:
+    """前端在挂载时拉取一次，缓存到 state 用于：
+
+    - 渲染"地毯类型"radio 的中文 label
+    - "恢复默认"按钮把 textarea 重置为选中类型的 prompt
+    - 初次进入页面时给 textarea 一个默认填充
+
+    返回结构：
+
+    ```json
+    {
+      "labels":  {"corridor": "走廊地毯", "living_room": "客厅地毯", "general": "通用地毯"},
+      "prompts": {"corridor": "...",        "living_room": "...",        "general": "..."}
+    }
+    ```
+
+    字段顺序按 corridor → living_room → general 排列，方便前端迭代。
+    """
+    return {
+        "labels": dict(CARPET_TYPE_LABELS),
+        "prompts": dict(CARPET_PROMPTS),
+    }
 
 
 # ---------- 列表 ----------
@@ -187,13 +218,24 @@ async def regenerate_title(
         raise HTTPException(status_code=404, detail=f"TitleTask {title_task_id} 不存在")
 
     new_model = request.model or old.model
-    new_system_prompt = request.system_prompt or old.prompt_snapshot.split("\n\n", 1)[0]
-    # prompt_snapshot 形如 "[system]\n...\n\n[user]\n..."，按 \n\n 切首段拿回 system 原文
-    # 防御：如果旧记录不是这个格式（向前兼容），退化为整个 prompt_snapshot
-    if not new_system_prompt.startswith("[system]"):
-        new_system_prompt = old.prompt_snapshot
+
+    # system_prompt 优先级：
+    # 1) request.system_prompt（用户显式自定义）→
+    # 2) request.carpet_type 对应的内置 prompt（用户切换地毯类型）→
+    # 3) 旧任务记录的 system（沿用历史，保证重新生成语义一致）
+    if request.system_prompt:
+        new_system_prompt = request.system_prompt
+    elif request.carpet_type:
+        new_system_prompt = CARPET_PROMPTS[request.carpet_type]
     else:
-        new_system_prompt = new_system_prompt[len("[system]\n"):]
+        # 从旧 prompt_snapshot 还原 system 原文
+        # prompt_snapshot 形如 "[system]\n...\n\n[user]\n..."，按 \n\n 切首段拿回 system
+        new_system_prompt = old.prompt_snapshot.split("\n\n", 1)[0]
+        # 防御：如果旧记录不是这个格式（向前兼容），退化为整个 prompt_snapshot
+        if not new_system_prompt.startswith("[system]"):
+            new_system_prompt = old.prompt_snapshot
+        else:
+            new_system_prompt = new_system_prompt[len("[system]\n"):]
 
     new_max_tokens = request.max_tokens if request.max_tokens is not None else old.max_tokens
     new_temperature = request.temperature if request.temperature is not None else old.temperature
