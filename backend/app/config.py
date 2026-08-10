@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     TOAPIS_API_KEY: str = ""
     TOAPIS_TIMEOUT: int = 300
 
+    # ToAPIs 出站代理。留空 = 直连（走系统路由表，公司 VPN 正常时生效）；
+    # 填具体地址时 httpx 会显式走 HTTP/SOCKS 代理（个人 VPN 场景）。
+    # 例子: "http://127.0.0.1:7897" 或 "socks5://127.0.0.1:7897"
+    TOAPIS_PROXY_URL: str = ""
+
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
     DATABASE_URL: str = "sqlite+aiosqlite:///./gpt_image2_platform.db"

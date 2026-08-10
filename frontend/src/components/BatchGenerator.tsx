@@ -853,63 +853,167 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
           {recentBatches.length === 0 ? (
             <div className="hint">当前页暂无批次数据。</div>
           ) : (
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-              {recentBatches.map((b) => (
-                <li
-                  key={b.batch_id}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    padding: '0.5rem',
-                    borderBottom: '1px solid #e5e7eb',
-                    gap: '0.5rem',
-                  }}
-                >
-                  <div
+            <>
+              {/* 状态图例：让用户一眼看懂徽章颜色含义 */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.75rem',
+                  flexWrap: 'wrap',
+                  fontSize: '0.75rem',
+                  color: '#6b7280',
+                  marginBottom: '0.5rem',
+                }}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <span
                     style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.5rem',
-                      flex: 1,
-                      minWidth: 0,
+                      width: '10px',
+                      height: '10px',
+                      borderRadius: '50%',
+                      background: '#16a34a',
                     }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedBatches.has(b.batch_id)}
-                      onChange={() => toggleBatchSelection(b.batch_id)}
-                      style={{ cursor: 'pointer' }}
-                    />
-                    <span className="hint" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {displayBatchId(b.batch_id)} · {b.completed_count}/{b.task_count} 完成 ·{' '}
-                      {new Date(b.last_created_at).toLocaleString()}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button
-                      type="button"
-                      onClick={() => handleLoadBatch(b.batch_id)}
-                      style={{ padding: '0.4rem 0.8rem' }}
-                    >
-                      查看
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteBatch(b.batch_id)}
-                      disabled={batchDeleting}
+                  />
+                  已完成
+                </span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <span
+                    style={{
+                      width: '10px',
+                      height: '10px',
+                      borderRadius: '50%',
+                      background: '#2563eb',
+                    }}
+                  />
+                  进行中
+                </span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <span
+                    style={{
+                      width: '10px',
+                      height: '10px',
+                      borderRadius: '50%',
+                      background: '#9ca3af',
+                    }}
+                  />
+                  待开始
+                </span>
+              </div>
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                {recentBatches.map((b) => {
+                  const theme = getBatchStatusTheme(
+                    b.completed_count,
+                    b.task_count
+                  )
+                  return (
+                    <li
+                      key={b.batch_id}
                       style={{
-                        padding: '0.4rem 0.8rem',
-                        background: '#fee2e2',
-                        color: '#991b1b',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '0.6rem 0.75rem',
+                        marginBottom: '0.35rem',
+                        // 左侧 4px 彩色竖条 + 整行淡色背景，按状态区分
+                        borderLeft: `4px solid ${theme.borderColor}`,
+                        background: theme.bgColor,
+                        borderRadius: '6px',
+                        gap: '0.5rem',
+                        transition: 'background 0.15s, border-color 0.15s',
                       }}
                     >
-                      删除
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.6rem',
+                          flex: 1,
+                          minWidth: 0,
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedBatches.has(b.batch_id)}
+                          onChange={() => toggleBatchSelection(b.batch_id)}
+                          style={{ cursor: 'pointer' }}
+                        />
+                        <div
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            minWidth: 0,
+                            gap: '0.1rem',
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.5rem',
+                              flexWrap: 'wrap',
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontWeight: 600,
+                                fontFamily: 'monospace',
+                                color: '#111827',
+                                fontSize: '0.9rem',
+                              }}
+                            >
+                              {displayBatchId(b.batch_id)}
+                            </span>
+                            <BatchStatusBadge
+                              completed={b.completed_count}
+                              total={b.task_count}
+                              theme={theme}
+                            />
+                            {theme.status === 'in_progress' && (
+                              <BatchInlineProgress
+                                completed={b.completed_count}
+                                total={b.task_count}
+                                color={theme.progressColor}
+                              />
+                            )}
+                          </div>
+                          <span
+                            className="hint"
+                            style={{
+                              fontSize: '0.75rem',
+                              color: '#6b7280',
+                            }}
+                          >
+                            {new Date(b.last_created_at).toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleLoadBatch(b.batch_id)}
+                          style={{ padding: '0.4rem 0.8rem' }}
+                        >
+                          查看
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteBatch(b.batch_id)}
+                          disabled={batchDeleting}
+                          style={{
+                            padding: '0.4rem 0.8rem',
+                            background: '#fee2e2',
+                            color: '#991b1b',
+                          }}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            </>
           )}
 
           {batchTotal > 0 && (
@@ -1053,6 +1157,14 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
           >
             {recentBatches.map((b) => {
               const isCurrent = b.batch_id === batch.batch_id
+              const theme = getBatchStatusTheme(
+                b.completed_count,
+                b.task_count
+              )
+              const pct =
+                b.task_count > 0
+                  ? Math.round((b.completed_count / b.task_count) * 100)
+                  : 0
               return (
                 <button
                   key={b.batch_id}
@@ -1066,33 +1178,55 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
                     flex: '0 0 auto',
                     padding: '0.4rem 0.75rem',
                     border: `1px solid ${
-                      isCurrent ? '#2563eb' : '#e5e7eb'
+                      isCurrent ? '#2563eb' : theme.borderColor
                     }`,
-                    background: isCurrent ? '#eff6ff' : '#fff',
+                    background: isCurrent ? '#eff6ff' : theme.bgColor,
                     color: isCurrent ? '#1d4ed8' : '#374151',
                     borderRadius: '6px',
                     fontSize: '0.8rem',
                     cursor: isCurrent ? 'default' : 'pointer',
                     textAlign: 'left',
                     minWidth: '180px',
+                    borderLeft: `4px solid ${theme.borderColor}`,
+                    position: 'relative',
                   }}
                   title={
                     isCurrent
                       ? '当前查看的批次'
-                      : `切换到批次 ${b.batch_id}`
+                      : `切换到批次 ${b.batch_id}（${theme.badgeLabel}）`
                   }
                 >
                   <div
                     style={{
                       fontWeight: 500,
                       fontFamily: 'monospace',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.35rem',
                     }}
                   >
+                    <span
+                      aria-hidden
+                      style={{
+                        fontSize: '0.85rem',
+                        color: theme.badgeText,
+                        lineHeight: 1,
+                      }}
+                    >
+                      {theme.badgeIcon}
+                    </span>
                     {displayBatchId(b.batch_id)}
                     {isCurrent && ' · 当前'}
                   </div>
-                  <div className="hint" style={{ fontSize: '0.75rem' }}>
-                    {b.completed_count}/{b.task_count} 完成
+                  <div
+                    style={{
+                      fontSize: '0.75rem',
+                      color: theme.badgeText,
+                      fontWeight: 600,
+                      marginTop: '0.15rem',
+                    }}
+                  >
+                    {b.completed_count}/{b.task_count} 完成 · {pct}%
                   </div>
                 </button>
               )
@@ -1672,6 +1806,153 @@ function buildFileName(index: number): string {
 function displayBatchId(batchId: string): string {
   if (batchId.length <= 12) return batchId
   return batchId.slice(0, 8)
+}
+
+/**
+ * 批次状态主题：根据 completed_count / task_count 决定配色和徽章。
+ *
+ * - completed: 全部完成（绿色，左边框 + 浅绿底 + "✓ 已完成" 徽章）
+ * - in_progress: 有完成但未全部完成（蓝色，左边框 + 浅蓝底 + "进行中" 徽章 + 进度条）
+ * - pending: 还没开始（灰色，左边框 + 浅灰底 + "待开始" 徽章）
+ */
+type BatchStatusTheme = {
+  status: 'completed' | 'in_progress' | 'pending'
+  borderColor: string
+  bgColor: string
+  badgeBg: string
+  badgeText: string
+  badgeLabel: string
+  badgeIcon: string
+  progressColor: string
+}
+
+function getBatchStatusTheme(
+  completed: number,
+  total: number
+): BatchStatusTheme {
+  if (total <= 0) {
+    return {
+      status: 'pending',
+      borderColor: '#d1d5db',
+      bgColor: '#f9fafb',
+      badgeBg: '#e5e7eb',
+      badgeText: '#6b7280',
+      badgeLabel: '空',
+      badgeIcon: '·',
+      progressColor: '#9ca3af',
+    }
+  }
+  if (completed >= total) {
+    return {
+      status: 'completed',
+      borderColor: '#16a34a',
+      bgColor: '#f0fdf4',
+      badgeBg: '#dcfce7',
+      badgeText: '#166534',
+      badgeLabel: '已完成',
+      badgeIcon: '✓',
+      progressColor: '#22c55e',
+    }
+  }
+  if (completed > 0) {
+    return {
+      status: 'in_progress',
+      borderColor: '#2563eb',
+      bgColor: '#eff6ff',
+      badgeBg: '#dbeafe',
+      badgeText: '#1d4ed8',
+      badgeLabel: '进行中',
+      badgeIcon: '◐',
+      progressColor: '#3b82f6',
+    }
+  }
+  return {
+    status: 'pending',
+    borderColor: '#d1d5db',
+    bgColor: '#f9fafb',
+    badgeBg: '#e5e7eb',
+    badgeText: '#6b7280',
+    badgeLabel: '待开始',
+    badgeIcon: '○',
+    progressColor: '#9ca3af',
+  }
+}
+
+/**
+ * 批次状态徽章：左侧带图标的状态 pill，便于一眼区分 8/8 与 7/8。
+ */
+function BatchStatusBadge({
+  completed,
+  total,
+  theme,
+}: {
+  completed: number
+  total: number
+  theme: BatchStatusTheme
+}) {
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '0.3rem',
+        padding: '0.15rem 0.5rem',
+        borderRadius: '999px',
+        fontSize: '0.75rem',
+        fontWeight: 600,
+        background: theme.badgeBg,
+        color: theme.badgeText,
+        whiteSpace: 'nowrap',
+        lineHeight: 1.4,
+      }}
+      title={`${completed}/${total} 已完成（${pct}%）`}
+    >
+      <span style={{ fontSize: '0.85rem', lineHeight: 1 }}>{theme.badgeIcon}</span>
+      <span>
+        {theme.badgeLabel} · {completed}/{total}
+      </span>
+    </span>
+  )
+}
+
+/**
+ * 批次行内迷你进度条（4px 高），仅在 in_progress 时显示，
+ * 让用户除了数字之外还能直观看到完成比例。
+ */
+function BatchInlineProgress({
+  completed,
+  total,
+  color,
+}: {
+  completed: number
+  total: number
+  color: string
+}) {
+  const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0
+  return (
+    <div
+      style={{
+        marginTop: '0.35rem',
+        height: '4px',
+        background: '#e5e7eb',
+        borderRadius: '999px',
+        overflow: 'hidden',
+        maxWidth: '180px',
+      }}
+      aria-label={`完成进度 ${pct}%`}
+    >
+      <div
+        style={{
+          width: `${pct}%`,
+          height: '100%',
+          background: color,
+          borderRadius: '999px',
+          transition: 'width 0.3s ease-out',
+        }}
+      />
+    </div>
+  )
 }
 
 function triggerDownload(blob: Blob, fileName: string) {

@@ -17,13 +17,21 @@ class ToApisClient:
         timeout: int = 300,
         max_retries: int = 3,
         base_delay: float = 1.0,
+        proxy_url: Optional[str] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
         self.max_retries = max_retries
         self.base_delay = base_delay
-        self._client = httpx.AsyncClient(timeout=timeout, trust_env=False)
+        # 留空 / None = 走系统路由表（公司 VPN 场景）；
+        # 传具体地址 = 显式走 HTTP/SOCKS 代理（个人 VPN 场景）。
+        # trust_env 保持 False，避免误读系统环境变量里的代理。
+        self._client = httpx.AsyncClient(
+            timeout=timeout,
+            trust_env=False,
+            proxy=proxy_url or None,
+        )
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"}
@@ -273,4 +281,5 @@ client = ToApisClient(
     settings.TOAPIS_BASE_URL,
     settings.TOAPIS_API_KEY,
     settings.TOAPIS_TIMEOUT,
+    proxy_url=settings.TOAPIS_PROXY_URL,
 )
