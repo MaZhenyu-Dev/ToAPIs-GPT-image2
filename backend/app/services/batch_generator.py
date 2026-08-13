@@ -72,7 +72,11 @@ class BatchGeneratorService:
         tasks = [
             GenerationTask(
                 batch_id=batch_id,
-                variant_id=variant.id,
+                # 直接赋值关系对象（不要只设 variant_id）：
+                # lazy="joined" 只在查询时加载关系，新建对象只设 variant_id 的话
+                # 提交协程在 session 关闭后访问 task.variant 会抛 DetachedInstanceError，
+                # 协程静默崩溃 → 任务永远 pending、请求发不出去。
+                variant=variant,
                 mode=request.mode,
                 size=request.size,
                 resolution=request.resolution,
@@ -223,7 +227,9 @@ class BatchGeneratorService:
                     all_tasks.append(
                         GenerationTask(
                             batch_id=batch_id,
-                            variant_id=variant.id,
+                            # 直接赋值关系对象（见 create_batch 注释：只设 variant_id
+                            # 会导致提交协程 detached 访问 task.variant 崩溃）
+                            variant=variant,
                             mode="i2i_multi",
                             size=request.size,
                             resolution=request.resolution,
@@ -266,21 +272,12 @@ class BatchGeneratorService:
 
         async def submit_one(task: GenerationTask) -> None:
             async with self.semaphore:
-                payload = self._build_payload(task, request)
                 try:
+                    payload = self._build_payload(task, request)
                     response = await client.create_generation(payload)
-                    toapis_task_id = response.get("id")
-                    async with AsyncSessionLocal() as session:
-                        fresh_task = await session.get(GenerationTask, task.id)
-                        if fresh_task:
-                            await update_task_status(
-                                session,
-                                fresh_task,
-                                status=response.get("status", "queued"),
-                                progress=response.get("progress", 0),
-                                toapis_task_id=toapis_task_id,
-                            )
                 except Exception as exc:
+                    # 任何提交异常（含 payload 构建失败）都落库 failed，
+                    # 绝不能静默吞掉——否则任务永远 pending、请求发不出去
                     async with AsyncSessionLocal() as session:
                         fresh_task = await session.get(GenerationTask, task.id)
                         if fresh_task:
@@ -290,8 +287,26 @@ class BatchGeneratorService:
                                 status="failed",
                                 error_msg=str(exc),
                             )
+                    return
+                toapis_task_id = response.get("id")
+                async with AsyncSessionLocal() as session:
+                    fresh_task = await session.get(GenerationTask, task.id)
+                    if fresh_task:
+                        await update_task_status(
+                            session,
+                            fresh_task,
+                            status=response.get("status", "queued"),
+                            progress=response.get("progress", 0),
+                            toapis_task_id=toapis_task_id,
+                        )
 
-        await asyncio.gather(*[submit_one(task) for task in tasks])
+        # 分块 gather：K 变体 × 500 批次 = 数千任务时，
+        # 一次性 gather 全部协程会同时开数千个 DB 会话抢连接（连接池已放大
+        # 到 100，但仍不该让提交风暴把池打满），分块让 DB 写操作平滑排队。
+        submit_chunk = 100
+        for i in range(0, len(tasks), submit_chunk):
+            chunk = tasks[i : i + submit_chunk]
+            await asyncio.gather(*[submit_one(task) for task in chunk])
 
     async def retry_failed(
         self, db: AsyncSession, batch_id: str

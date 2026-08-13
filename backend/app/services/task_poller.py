@@ -14,6 +14,9 @@ from backend.app.toapis_client import client
 class TaskPollerService:
     """任务状态同步服务：将 ToAPIs 任务状态刷新到本地数据库。"""
 
+    # 单轮 gather 的任务块大小：防止一次并发上千个 DB 会话打爆连接池
+    _SYNC_CHUNK = 100
+
     def __init__(self):
         self.semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_GENERATIONS)
 
@@ -28,9 +31,11 @@ class TaskPollerService:
             task for task in tasks if task.status not in ("completed", "failed")
         ]
 
-        await asyncio.gather(
-            *[self._sync_one(task) for task in active_tasks]
-        )
+        # 分块 gather：避免一个批次上千个任务时一次性并发上千个协程，
+        # 每个协程都开 DB 会话抢连接，打爆 SQLAlchemy 连接池（默认 ~15）。
+        for i in range(0, len(active_tasks), self._SYNC_CHUNK):
+            chunk = active_tasks[i : i + self._SYNC_CHUNK]
+            await asyncio.gather(*[self._sync_one(task) for task in chunk])
 
         # 重新读取最新状态
         tasks = await get_tasks_by_batch(db, batch_id)

@@ -16,6 +16,8 @@ class BackgroundPoller:
 
     # 本地超时阈值：任务创建后超过该时间仍未完成则标记失败
     TASK_TIMEOUT = timedelta(minutes=5)
+    # 单轮 gather 的任务块大小：防止一次并发上千个 DB 会话打爆连接池
+    _POLL_CHUNK = 100
 
     def __init__(
         self,
@@ -59,14 +61,23 @@ class BackgroundPoller:
                 pass
 
     async def _poll_once(self) -> None:
-        """执行一次全量未结束任务同步。"""
+        """执行一次全量未结束任务同步。
+
+        **重要**：任务按块（``_POLL_CHUNK``）分批 gather，而不是一次
+        ``asyncio.gather`` 全部任务。i2i_multi 一次可创建上万任务，
+        若一次 gather 数千个协程，每个协程都开一个 DB 会话抢连接，
+        会耗尽 SQLAlchemy 连接池（默认仅 ~15 个连接），导致整个应用的
+        DB 操作全部排队、状态永不更新——表现为"图片已生成但一直排队中"。
+        """
         async with AsyncSessionLocal() as session:
             tasks = await get_incomplete_tasks(session)
 
         if not tasks:
             return
 
-        await asyncio.gather(*[self._sync_one(task) for task in tasks])
+        for i in range(0, len(tasks), self._POLL_CHUNK):
+            chunk = tasks[i : i + self._POLL_CHUNK]
+            await asyncio.gather(*[self._sync_one(task) for task in chunk])
 
     async def _sync_one(self, task: GenerationTask) -> None:
         """同步单个任务状态，并处理本地超时。"""
