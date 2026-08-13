@@ -175,8 +175,18 @@ export interface ImageUploadResponse {
 
 // ---------- 标题生成 ----------
 
-// 支持的多模态模型 ID（与后端白名单对齐）
-export type TitleModelId = 'gemini-3.6-flash' | 'grok-4.5' | 'gpt-5.6-sol'
+// 支持的多模态模型 ID（与后端白名单对齐，顺序同失败重试切换顺序）
+export type TitleModelId =
+  | 'gemini-3.6-flash'
+  | 'gpt-5.6-terra'
+  | 'gpt-5.4-mini'
+  | 'claude-haiku-4-5'
+  | 'gpt-5.4-mini-official'
+  | 'grok-4.6'
+  | 'gemini-3.1-pro'
+  | 'grok-4.5'
+  | 'gpt-5.6-sol'
+  | 'gpt-5.4-nano-official'
 
 export interface TitleModelOption {
   id: TitleModelId

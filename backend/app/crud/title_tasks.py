@@ -124,9 +124,16 @@ async def update_title_task_result(
     status: str,
     title: Optional[str] = None,
     error_msg: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> TitleTask:
-    """把 TitleTask 状态推进到 completed / failed，并写入结果。"""
+    """把 TitleTask 状态推进到 completed / failed，并写入结果。
+
+    - model 可选：失败重试换模型成功后，把 task 上记录的实际成功模型同步回写，
+      方便前端展示「最终由哪个模型生成」。
+    """
     title_task.status = status
+    if model is not None:
+        title_task.model = model
     if status == "completed":
         title_task.title = title
         title_task.error_msg = None

@@ -28,10 +28,10 @@ export const MIN_PRODUCT_SWAP_COUNT = 1
 export const MAX_PRODUCT_SWAP_COUNT = 20
 
 // 文件夹批量图生图（i2i_multi）模式：一次请求创建的批次数量上下限
-// 与后端 MIN/MAX_I2I_MULTI_COUNT 同步；前端预设 10/20/50 三个快捷选项
+// 与后端 MIN/MAX_I2I_MULTI_COUNT 同步；ToAPIs 官方并发升级后放开到 500
 export const MIN_I2I_MULTI_COUNT = 1
-export const MAX_I2I_MULTI_COUNT = 50
-export const I2I_MULTI_QUICK_PICKS = [10, 20, 50] as const
+export const MAX_I2I_MULTI_COUNT = 500
+export const I2I_MULTI_QUICK_PICKS = [10, 50, 100, 200, 500] as const
 
 // 文件夹批量图生图：接受的图片扩展名（小写）
 // 用户图片文件名规范：`阿拉伯数字 + 扩展名`，如 1.png / 23.jpg
@@ -41,11 +41,42 @@ export const I2I_MULTI_FILENAME_PATTERN = /^(\d+)\.(png|jpg|jpeg)$/i
 // ---------- 标题生成 ----------
 
 // 支持的多模态模型清单（与后端 SUPPORTED_TITLE_MODELS 对齐）
+// 顺序即失败重试的切换顺序：性价比高、稳定的模型排前面；贵的/弱的排后面。
 export const TITLE_MODEL_OPTIONS = [
   {
     id: 'gemini-3.6-flash',
     label: 'Gemini 3.6 Flash',
     description: '默认 / 速度快 / 性价比高',
+  },
+  {
+    id: 'gpt-5.6-terra',
+    label: 'GPT-5.6 Terra',
+    description: '低价主力，速度与质量均衡',
+  },
+  {
+    id: 'gpt-5.4-mini',
+    label: 'GPT-5.4 Mini',
+    description: '低价，日常标题够用',
+  },
+  {
+    id: 'claude-haiku-4-5',
+    label: 'Claude Haiku 4.5',
+    description: 'Anthropic 轻量级，稳定',
+  },
+  {
+    id: 'gpt-5.4-mini-official',
+    label: 'GPT-5.4 Mini (Official)',
+    description: '官方渠道，稳定性优先',
+  },
+  {
+    id: 'grok-4.6',
+    label: 'Grok 4.6',
+    description: 'xAI 新款，风格灵活',
+  },
+  {
+    id: 'gemini-3.1-pro',
+    label: 'Gemini 3.1 Pro',
+    description: 'Pro 级，长标题质量好',
   },
   {
     id: 'grok-4.5',
@@ -56,6 +87,11 @@ export const TITLE_MODEL_OPTIONS = [
     id: 'gpt-5.6-sol',
     label: 'GPT-5.6 Sol',
     description: '推理强，适合复杂长标题',
+  },
+  {
+    id: 'gpt-5.4-nano-official',
+    label: 'GPT-5.4 Nano (Official)',
+    description: '最便宜，兜底用',
   },
 ] as const
 

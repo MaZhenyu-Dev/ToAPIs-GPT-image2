@@ -26,9 +26,11 @@ MIN_PRODUCT_SWAP_COUNT = 1
 MAX_PRODUCT_SWAP_COUNT = 20
 
 # i2i_multi（文件夹批量图生图）：一次请求创建的批次数量上下限
-# 1 是最小值（至少 1 张图），50 是为了与前端 10/20/50 选项 + 自定义封顶对齐
+# 1 是最小值（至少 1 张图），500 是 ToAPIs 官方并发升级后的新上限
+# （原 50；联系 ToAPIs 将生图模型并发提升到 6000 后放款）。
+# 与前端 I2I_MULTI_QUICK_PICKS / 自定义输入 max 对齐。
 MIN_I2I_MULTI_COUNT = 1
-MAX_I2I_MULTI_COUNT = 50
+MAX_I2I_MULTI_COUNT = 500
 
 # ToAPIs 尺寸 / 分辨率 / 像素对照表
 SIZE_RESOLUTION_MAP: dict[str, dict[str, str]] = {
@@ -342,7 +344,7 @@ class I2iMultiCreateRequest(SizeResolutionMixin):
         ...,
         min_length=MIN_I2I_MULTI_COUNT,
         max_length=MAX_I2I_MULTI_COUNT,
-        description="图片 URL 列表，按顺序生成 N 个批次（1-50 项）",
+        description=f"图片 URL 列表，按顺序生成 N 个批次（{MIN_I2I_MULTI_COUNT}-{MAX_I2I_MULTI_COUNT} 项）",
     )
     prefix: str = Field(default="MZY", description="批次号前缀，仅允许 A-Z / 0-9")
 
@@ -382,10 +384,33 @@ class I2iMultiCreateResponse(BaseModel):
 # ---------- 标题生成 schema ----------
 
 # 支持的多模态模型列表。前端展示 + 后端校验白名单。
-SUPPORTED_TITLE_MODELS = Literal[
+# 顺序与前端 TITLE_MODEL_OPTIONS 保持一致（同时也是失败重试的切换顺序）。
+# 注：Literal 必须显式列出（Python 3.10 及以下不支持 Literal[*list]），
+# 修改模型清单时记得同步 TITLE_MODEL_ORDER 与 SUPPORTED_TITLE_MODELS。
+TITLE_MODEL_ORDER = [
     "gemini-3.6-flash",
+    "gpt-5.6-terra",
+    "gpt-5.4-mini",
+    "claude-haiku-4-5",
+    "gpt-5.4-mini-official",
+    "grok-4.6",
+    "gemini-3.1-pro",
     "grok-4.5",
     "gpt-5.6-sol",
+    "gpt-5.4-nano-official",
+]
+
+SUPPORTED_TITLE_MODELS = Literal[
+    "gemini-3.6-flash",
+    "gpt-5.6-terra",
+    "gpt-5.4-mini",
+    "claude-haiku-4-5",
+    "gpt-5.4-mini-official",
+    "grok-4.6",
+    "gemini-3.1-pro",
+    "grok-4.5",
+    "gpt-5.6-sol",
+    "gpt-5.4-nano-official",
 ]
 
 # 地毯类型：决定使用哪份内置 prompt（corridor=走廊, living_room=客厅, general=通用）

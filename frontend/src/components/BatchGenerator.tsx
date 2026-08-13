@@ -35,6 +35,8 @@ import {
 } from '../lib/fsDownload'
 
 const POLL_INTERVAL_MS = 3000
+// 批次列表自动刷新间隔：只要有批次还在生成中就持续刷新，全部完成后停止
+const LIST_POLL_INTERVAL_MS = 3000
 
 interface Props {
   groups: VariantGroupListItem[]
@@ -170,6 +172,20 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
     setBatchPage(1)
     void loadRecentBatches(1, batchPageSize)
   }, [loadRecentBatches, batchPageSize])
+
+  // 批次列表自动刷新：当前页有未完成批次时定时拉取最新完成数，
+  // 避免"图片已生成但列表仍显示未完成、需手动刷新"的问题。
+  // 全部完成后自动停止（省请求）。
+  const hasIncompleteBatch = recentBatches.some(
+    (b) => b.completed_count < b.task_count
+  )
+  useEffect(() => {
+    if (!hasIncompleteBatch || batch) return
+    const timer = setInterval(() => {
+      void loadRecentBatches(batchPage, batchPageSize)
+    }, LIST_POLL_INTERVAL_MS)
+    return () => clearInterval(timer)
+  }, [hasIncompleteBatch, batch, batchPage, batchPageSize, loadRecentBatches])
 
   // 轮询逻辑已抽到 useBatchPolling hook（fetchOnce / startPolling / clearPolling）
 

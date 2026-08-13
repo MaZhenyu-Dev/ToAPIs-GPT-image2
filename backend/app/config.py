@@ -25,7 +25,10 @@ class Settings(BaseSettings):
     DATABASE_PASSWORD: str = ""
     DATABASE_NAME: str = "gpt_image2_platform"
 
-    MAX_CONCURRENT_GENERATIONS: int = 20
+    # ToAPIs 官方已将生图模型并发提升到 6000；本地仍保留一个合理的
+    # 上限（默认 200，超过典型使用量），避免单机 / 本地 DB 成为瓶颈。
+    # 可通过 .env 的 MAX_CONCURRENT_GENERATIONS 调整。
+    MAX_CONCURRENT_GENERATIONS: int = 200
     POLL_INTERVAL_SECONDS: int = 5
 
     # 标题生成：调用 ToAPIs chat/completions（多模态）时的并发上限。

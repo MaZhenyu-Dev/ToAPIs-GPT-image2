@@ -27,10 +27,16 @@ class ToApisClient:
         # 留空 / None = 走系统路由表（公司 VPN 场景）；
         # 传具体地址 = 显式走 HTTP/SOCKS 代理（个人 VPN 场景）。
         # trust_env 保持 False，避免误读系统环境变量里的代理。
+        # 连接池放大：ToAPIs 官方并发 6000，本地 MAX_CONCURRENT_GENERATIONS
+        # 可拉到 200+，默认 100 连接会成瓶颈（多余的请求排队等待连接）。
         self._client = httpx.AsyncClient(
             timeout=timeout,
             trust_env=False,
             proxy=proxy_url or None,
+            limits=httpx.Limits(
+                max_connections=600,
+                max_keepalive_connections=100,
+            ),
         )
 
     def _headers(self) -> dict[str, str]:

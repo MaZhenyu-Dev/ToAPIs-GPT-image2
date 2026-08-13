@@ -22,6 +22,7 @@ from backend.app.config import settings
 from backend.app.crud import title_tasks as crud
 from backend.app.database import AsyncSessionLocal
 from backend.app.models import GenerationTask, TitleTask
+from backend.app.schemas import TITLE_MODEL_ORDER
 from backend.app.toapis_client import client
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,11 @@ logger = logging.getLogger(__name__)
 # 防止批量 50 个标题瞬间打爆 ToAPIs 触发 429。
 _title_semaphore: Optional[asyncio.Semaphore] = None
 
+# 单个标题任务最多尝试的模型数（原模型 1 次 + 失败后换模型重试 2 次）。
+# 换模型的顺序 = TITLE_MODEL_ORDER（与前端下拉框顺序一致）。
+# 全部失败后任务标记为 failed，由前端引导用户手动重试。
+MAX_TITLE_MODEL_ATTEMPTS = 3
+
 
 def _get_semaphore() -> asyncio.Semaphore:
     """懒加载信号量（asyncio.Semaphore 必须在事件循环里实例化）。"""
@@ -37,6 +43,23 @@ def _get_semaphore() -> asyncio.Semaphore:
     if _title_semaphore is None:
         _title_semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_TITLE_GENERATIONS)
     return _title_semaphore
+
+
+def build_attempt_model_order(initial_model: str) -> list[str]:
+    """生成本次任务实际尝试的模型序列。
+
+    规则：
+    - 首选用户指定的模型；
+    - 失败后按 TITLE_MODEL_ORDER 的顺序依次切换其它模型；
+    - 总尝试次数不超过 MAX_TITLE_MODEL_ATTEMPTS。
+    """
+    attempts = [initial_model]
+    for model in TITLE_MODEL_ORDER:
+        if model != initial_model:
+            attempts.append(model)
+        if len(attempts) >= MAX_TITLE_MODEL_ATTEMPTS:
+            break
+    return attempts
 
 
 def build_title_messages(
@@ -108,6 +131,11 @@ async def _generate_one(
 
     独立 session，失败不影响其他任务，最后一定把状态推进到 completed/failed。
 
+    模型容错：首选用户指定的模型；调用失败 / 返回内容为空时，按
+    ``TITLE_MODEL_ORDER`` 顺序依次切换其它模型，最多尝试
+    ``MAX_TITLE_MODEL_ATTEMPTS`` 个模型。全部失败才标记 failed，
+    error_msg 会包含每个模型的失败原因，方便前端引导用户手动重试。
+
     顶层 try/except 是兜底：任何未被内层 try 捕获的异常（DB 写失败、
     asyncio 取消等）都会被捕获并把任务标为 failed，避免 asyncio 抛
     "Task exception was never retrieved" 警告。
@@ -123,48 +151,63 @@ async def _generate_one(
                     return
                 await crud.mark_title_task_in_progress(db, title_task)
 
-            # 实际调用 ToAPIs
-            try:
-                messages = build_title_messages(system_prompt, image_url)
-                payload = await client.chat_completion(
-                    model=model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    timeout=120,  # 标题生成通常 < 30s，给 2 分钟兜底
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("TitleTask %s 调用 ToAPIs 失败: %s", title_task_id, exc)
+            attempts = build_attempt_model_order(model)
+            last_error = ""
+            for attempt_no, attempt_model in enumerate(attempts, start=1):
+                try:
+                    messages = build_title_messages(system_prompt, image_url)
+                    payload = await client.chat_completion(
+                        model=attempt_model,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        timeout=120,  # 标题生成通常 < 30s，给 2 分钟兜底
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    last_error = f"{attempt_model}: {exc}"
+                    logger.warning(
+                        "TitleTask %s 模型 %s 调用失败（尝试 %d/%d）: %s",
+                        title_task_id, attempt_model, attempt_no, len(attempts), exc,
+                    )
+                    continue
+
+                content = extract_assistant_content(payload)
+                if not content:
+                    last_error = f"{attempt_model}: 模型返回内容为空"
+                    logger.warning(
+                        "TitleTask %s 模型 %s 返回内容为空（尝试 %d/%d），原始 payload=%s",
+                        title_task_id, attempt_model, attempt_no, len(attempts), payload,
+                    )
+                    continue
+
+                # 成功：落库 completed（model 字段记录实际成功的模型，供前端展示）
                 async with AsyncSessionLocal() as db:
                     title_task = await crud.get_title_task_by_id(db, title_task_id)
                     if title_task is not None:
                         await crud.update_title_task_result(
                             db, title_task,
-                            status="failed",
-                            error_msg=str(exc) or exc.__class__.__name__,
+                            status="completed", title=content,
+                            model=attempt_model,
                         )
+                logger.info(
+                    "TitleTask %s 标题生成成功（模型 %s），长度=%d",
+                    title_task_id, attempt_model, len(content),
+                )
                 return
 
-            content = extract_assistant_content(payload)
-            if not content:
-                err = "模型返回内容为空"
-                logger.warning("TitleTask %s %s，原始 payload=%s", title_task_id, err, payload)
-                async with AsyncSessionLocal() as db:
-                    title_task = await crud.get_title_task_by_id(db, title_task_id)
-                    if title_task is not None:
-                        await crud.update_title_task_result(
-                            db, title_task, status="failed", error_msg=err
-                        )
-                return
-
-            # 落库 completed
+            # 所有模型都失败
+            error_msg = (
+                f"已尝试 {len(attempts)} 个模型均失败：{'; '.join(attempts)}。"
+                f"最后错误：{last_error}"
+            )
+            logger.error("TitleTask %s 生成失败: %s", title_task_id, error_msg)
             async with AsyncSessionLocal() as db:
                 title_task = await crud.get_title_task_by_id(db, title_task_id)
                 if title_task is not None:
                     await crud.update_title_task_result(
-                        db, title_task, status="completed", title=content
+                        db, title_task,
+                        status="failed", error_msg=error_msg,
                     )
-        logger.info("TitleTask %s 标题生成成功，长度=%d", title_task_id, len(content))
     except Exception as exc:  # noqa: BLE001
         # 兜底：捕获所有未被内层处理的异常（含 DB 失败、asyncio.CancelledError
         # 之外的取消等），把任务标为 failed，避免事件循环报未检索任务异常。

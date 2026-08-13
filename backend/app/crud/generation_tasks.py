@@ -51,10 +51,16 @@ async def find_existing_batch_ids(
 async def create_generation_tasks(
     db: AsyncSession, tasks: list[GenerationTask]
 ) -> list[GenerationTask]:
+    """批量创建任务。
+
+    **性能说明**：i2i_multi 一次最多 500 张图 × K 变体 = 上万条任务。
+    - 用 ``add_all`` + 单次 commit，一条 INSERT 语句批量写入；
+    - **不要**对每个 task 做 ``db.refresh()``——那是上万次 SELECT 往返，
+      会把一次创建拖慢到分钟级。自增 id 在 commit 时已由 ORM 回填，
+      调用方直接读 ``task.id`` 即可。
+    """
     db.add_all(tasks)
     await db.commit()
-    for task in tasks:
-        await db.refresh(task)
     return tasks
 
 
@@ -92,9 +98,13 @@ async def get_task_by_id(db: AsyncSession, task_id: int) -> GenerationTask | Non
 
 
 async def get_incomplete_tasks(
-    db: AsyncSession, limit: int = 500
+    db: AsyncSession, limit: int = 5000
 ) -> list[GenerationTask]:
-    """获取所有未结束的任务，用于后台轮询。"""
+    """获取所有未结束的任务，用于后台轮询。
+
+    limit 默认 5000：i2i_multi 一次最多 500 批次 × K 变体 ≈ 上万任务，
+    500 太小会导致轮询器多轮才能覆盖全部任务，任务状态滞后几十分钟。
+    """
     result = await db.execute(
         select(GenerationTask)
         .where(
