@@ -273,13 +273,19 @@ async def update_task_status(
 async def reset_task_for_regenerate(
     db: AsyncSession, task: GenerationTask
 ) -> GenerationTask:
-    """重置任务状态以便重新生成：清空图片/进度/错误/远端任务ID。"""
+    """重置任务状态以便重新生成：清空图片/进度/错误/远端任务ID。
+
+    **同时重置 created_at**：轮询器的"本地超时（5 分钟）"以 created_at 为
+    计时基准，若重试/重新生成后不刷新它，第二天重试的任务会因 created_at
+    是昨天的而被轮询器立刻判超时标 failed（连 ToAPIs 都不查）。
+    """
     task.status = "pending"
     task.progress = 0
     task.image_url = None
     task.error_msg = None
     task.toapis_task_id = None
     task.completed_at = None
+    task.created_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(task)
     return task

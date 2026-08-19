@@ -81,7 +81,13 @@ class BackgroundPoller:
 
     async def _sync_one(self, task: GenerationTask) -> None:
         """同步单个任务状态，并处理本地超时。"""
-        # 本地超时兜底
+        # 尚未提交到 ToAPIs（无远端任务 ID）的任务不判超时：
+        # - 可能还在排队等待提交（高并发时成千上万任务排队很正常）
+        # - 重试后 created_at 已刷新，超时从重试时刻重新计时
+        if not task.toapis_task_id:
+            return
+
+        # 本地超时兜底：只对「已提交到 ToAPIs 但超过 5 分钟没结果」的任务生效
         created_at = task.created_at
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
@@ -96,10 +102,6 @@ class BackgroundPoller:
                         progress=task.progress,
                         error_msg="任务本地超时（超过 5 分钟未完成）",
                     )
-            return
-
-        if not task.toapis_task_id:
-            # 仍在等待后台提交到 ToAPIs，无需查询
             return
 
         async with self.semaphore:

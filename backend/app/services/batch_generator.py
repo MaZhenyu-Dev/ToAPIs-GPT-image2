@@ -319,17 +319,17 @@ class BatchGeneratorService:
         if not failed_tasks:
             raise ValueError(f"批次 {batch_id} 没有失败任务可重试")
 
-        # 重置任务状态
+        # 重置任务状态（含 created_at：让轮询器的 5 分钟超时从本次重试重新计时，
+        # 否则隔天重试的任务会因 created_at 是昨天的而被立即判超时标 failed）
         for task in failed_tasks:
-            await update_task_status(
-                db,
-                task,
-                status="pending",
-                progress=0,
-                image_url=None,
-                error_msg=None,
-                toapis_task_id=None,
-            )
+            task.status = "pending"
+            task.progress = 0
+            task.image_url = None
+            task.error_msg = None
+            task.toapis_task_id = None
+            task.completed_at = None
+            task.created_at = datetime.now(timezone.utc)
+        await db.commit()
 
         # 重建请求对象用于提交；group_id 仅用于 schema 校验，重试逻辑不依赖它
         request = BatchGenerateRequest(
