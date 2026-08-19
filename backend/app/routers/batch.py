@@ -14,6 +14,8 @@ from backend.app.schemas import (
     BatchGenerateRequest,
     BatchGenerateResponse,
     BatchListResponse,
+    BatchRetryRequest,
+    BatchRetryResponse,
     BatchStatusResponse,
     GenerationTaskOut,
     I2iMultiCreateRequest,
@@ -108,6 +110,33 @@ async def retry_failed_tasks(batch_id: str, db: AsyncSession = Depends(get_db)):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return BatchGenerateResponse(batch_id=batch_id, task_count=task_count)
+
+
+@router.post("/retry-failed", response_model=BatchRetryResponse)
+async def retry_failed_batches_bulk(
+    request: BatchRetryRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """一键重试多个批次中的失败任务（近期批次总览页「重试已选批次」）。
+
+    系统校验：
+    - 只重试「存在 failed 任务」的批次；无失败任务的批次跳过并返回
+    - 批次不存在（已删除）同样跳过，不报错
+    - 每个批次独立后台提交，互不影响
+    """
+    if not request.batch_ids:
+        raise HTTPException(status_code=400, detail="batch_ids 不能为空")
+    try:
+        retried_batch_ids, retried_task_count, skipped = (
+            await batch_generator.retry_failed_batches(db, request.batch_ids)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return BatchRetryResponse(
+        retried_batch_ids=retried_batch_ids,
+        retried_task_count=retried_task_count,
+        skipped_batch_ids=skipped,
+    )
 
 
 @router.post(

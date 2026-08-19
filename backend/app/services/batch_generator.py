@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.config import settings
 from backend.app.crud.generation_tasks import (
     _format_seq,
+    count_failed_tasks_by_batches,
     count_today_batches,
     create_generation_tasks,
     find_existing_batch_ids,
@@ -319,8 +320,54 @@ class BatchGeneratorService:
         if not failed_tasks:
             raise ValueError(f"批次 {batch_id} 没有失败任务可重试")
 
-        # 重置任务状态（含 created_at：让轮询器的 5 分钟超时从本次重试重新计时，
-        # 否则隔天重试的任务会因 created_at 是昨天的而被立即判超时标 failed）
+        await self._reset_and_resubmit(db, batch_id, failed_tasks)
+        return batch_id, len(failed_tasks)
+
+    async def retry_failed_batches(
+        self, db: AsyncSession, batch_ids: list[str]
+    ) -> tuple[list[str], int, list[str]]:
+        """跨批次一键重试失败任务（近期批次总览页「重试已选批次」）。
+
+        - 只重试「确实存在 failed 任务」的批次，其余批次跳过并返回
+        - 每个批次独立后台提交（互不影响，一个批次失败不影响其他）
+        - 返回 ``(retried_batch_ids, retried_task_count, skipped_batch_ids)``
+        """
+        # 先做批次存在性校验：批量查这些批次是否真实存在
+        existing = await find_existing_batch_ids(db, batch_ids)
+        # 每个批次的失败任务数（决定哪些批次真正需要重试）
+        failed_counts = await count_failed_tasks_by_batches(db, batch_ids)
+
+        retried_batch_ids: list[str] = []
+        skipped_batch_ids: list[str] = []
+        retried_task_count = 0
+
+        for batch_id in batch_ids:
+            if batch_id not in existing:
+                # 批次不存在（已被删除等）：跳过，不报错
+                skipped_batch_ids.append(batch_id)
+                continue
+            failed_count = failed_counts.get(batch_id, 0)
+            if failed_count == 0:
+                # 没有失败任务：跳过
+                skipped_batch_ids.append(batch_id)
+                continue
+
+            failed_tasks = await get_failed_tasks_by_batch(db, batch_id)
+            await self._reset_and_resubmit(db, batch_id, failed_tasks)
+            retried_batch_ids.append(batch_id)
+            retried_task_count += len(failed_tasks)
+
+        return retried_batch_ids, retried_task_count, skipped_batch_ids
+
+    async def _reset_and_resubmit(
+        self, db: AsyncSession, batch_id: str, failed_tasks: Sequence[GenerationTask]
+    ) -> None:
+        """重置一批失败任务为 pending，并在后台重新提交到 ToAPIs。
+
+        - 重置时刷新 created_at：让轮询器的 5 分钟超时从本次重试重新计时，
+          否则隔天重试的任务会因 created_at 是昨天的而被立即判超时标 failed
+        - 单个批次一个后台协程（内部按 chunk 分块提交），多批次互不影响
+        """
         for task in failed_tasks:
             task.status = "pending"
             task.progress = 0
@@ -346,8 +393,6 @@ class BatchGeneratorService:
 
         # 后台异步重新提交
         asyncio.create_task(self._submit_to_toapis(batch_id, failed_tasks, request))
-
-        return batch_id, len(failed_tasks)
 
     def _build_payload(
         self, task: GenerationTask, request: BatchGenerateRequest

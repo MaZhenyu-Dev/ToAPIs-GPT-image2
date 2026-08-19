@@ -125,6 +125,7 @@ export interface BatchSummary {
   batch_id: string
   task_count: number
   completed_count: number
+  failed_count: number
   last_created_at: string
 }
 
@@ -139,6 +140,13 @@ export interface BatchListResponse {
 export interface BatchDeleteResponse {
   deleted_batch_ids: string[]
   deleted_task_count: number
+}
+
+// 批量重试失败任务响应（总览页「重试已选批次」）
+export interface BatchRetryResponse {
+  retried_batch_ids: string[]
+  retried_task_count: number
+  skipped_batch_ids: string[]
 }
 
 // 今日批次计数（来自 GET /api/batches/today-count）

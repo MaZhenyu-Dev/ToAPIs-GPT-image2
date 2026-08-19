@@ -3,6 +3,7 @@ import type {
   BatchGenerateRequest,
   BatchGenerateResponse,
   BatchListResponse,
+  BatchRetryResponse,
   BatchStatusResponse,
   GenerationRequest,
   GenerationTask,
@@ -190,6 +191,16 @@ export function deleteBatch(batchId: string): Promise<BatchDeleteResponse> {
 export function deleteBatches(batchIds: string[]): Promise<BatchDeleteResponse> {
   return fetchJson<BatchDeleteResponse>('/api/batches', {
     method: 'DELETE',
+    body: JSON.stringify({ batch_ids: batchIds }),
+  })
+}
+
+// 一键重试多个批次中的失败任务（近期批次总览页「重试已选批次」）
+export function retryFailedBatches(
+  batchIds: string[]
+): Promise<BatchRetryResponse> {
+  return fetchJson<BatchRetryResponse>('/api/batches/retry-failed', {
+    method: 'POST',
     body: JSON.stringify({ batch_ids: batchIds }),
   })
 }

@@ -287,6 +287,7 @@ class BatchSummary(BaseModel):
     batch_id: str
     task_count: int
     completed_count: int
+    failed_count: int = 0
     last_created_at: datetime
 
 
@@ -305,6 +306,22 @@ class BatchDeleteResponse(BaseModel):
 
     deleted_batch_ids: list[str]
     deleted_task_count: int
+
+
+class BatchRetryRequest(BaseModel):
+    """批量重试失败任务请求：对选中的批次，重试其中所有 failed 任务。"""
+
+    batch_ids: list[str] = Field(..., min_length=1, max_length=500)
+
+
+class BatchRetryResponse(BaseModel):
+    """批量重试失败任务响应。"""
+
+    # 实际发起了重试的批次（存在 failed 任务的批次）
+    retried_batch_ids: list[str]
+    retried_task_count: int
+    # 用户选中但没有 failed 任务、被跳过的批次
+    skipped_batch_ids: list[str]
 
 
 class TodayBatchCountResponse(BaseModel):

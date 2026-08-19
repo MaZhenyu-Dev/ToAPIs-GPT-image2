@@ -9,6 +9,7 @@ import {
   listRecentBatches,
   regenerateTask,
   retryBatch,
+  retryFailedBatches,
 } from '../api'
 import {
   DEFAULT_RESOLUTION,
@@ -89,6 +90,7 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
   const [batchTotal, setBatchTotal] = useState(0)
   const [batchTotalPages, setBatchTotalPages] = useState(0)
   const [batchDeleting, setBatchDeleting] = useState(false)
+  const [batchRetrying, setBatchRetrying] = useState(false)
   const [regeneratingTaskId, setRegeneratingTaskId] = useState<number | null>(null)
   const [dirDownloading, setDirDownloading] = useState(false)
   const [dirProgress, setDirProgress] = useState<
@@ -396,6 +398,61 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
       setError(err instanceof Error ? err.message : '批量删除失败')
     } finally {
       setBatchDeleting(false)
+    }
+  }
+
+  /**
+   * 一键重试已选批次中的失败任务（加强版重试）。
+   *
+   * 校验逻辑：
+   * - 选中的批次中，只有「存在 failed 任务」的批次会被重试
+   * - 后端返回 skipped_batch_ids（选中但无失败任务的批次），前端提示
+   */
+  const handleRetrySelectedBatches = async () => {
+    if (selectedBatches.size === 0) return
+
+    // 前端预检：计算选中批次中有失败任务的批次与失败任务总数
+    const selectedIds = Array.from(selectedBatches)
+    const failedInSelected = recentBatches.filter(
+      (b) => selectedBatches.has(b.batch_id) && b.failed_count > 0
+    )
+    const failedTaskCount = failedInSelected.reduce(
+      (sum, b) => sum + b.failed_count,
+      0
+    )
+    const skippedCount = selectedIds.length - failedInSelected.length
+
+    if (failedInSelected.length === 0) {
+      setError('选中的批次没有失败任务，无需重试')
+      return
+    }
+    if (
+      !window.confirm(
+        `将重试 ${failedInSelected.length} 个批次中的 ${failedTaskCount} 个失败任务` +
+          (skippedCount > 0 ? `（${skippedCount} 个批次无失败任务，将自动跳过）` : '') +
+          '，确定继续吗？'
+      )
+    ) {
+      return
+    }
+
+    setBatchRetrying(true)
+    setError(null)
+    try {
+      const result = await retryFailedBatches(selectedIds)
+      setSelectedBatches(new Set())
+      await refreshCurrentPage()
+      void refreshTodayCount(prefix)
+      const msg = `已重试 ${result.retried_batch_ids.length} 个批次、${result.retried_task_count} 个失败任务`
+      setError(
+        result.skipped_batch_ids.length > 0
+          ? `${msg}；${result.skipped_batch_ids.length} 个批次无失败任务已跳过`
+          : msg
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '批量重试失败')
+    } finally {
+      setBatchRetrying(false)
     }
   }
 
@@ -851,6 +908,21 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
               )}
               <button
                 type="button"
+                onClick={handleRetrySelectedBatches}
+                disabled={selectedBatches.size === 0 || batchRetrying}
+                style={{
+                  padding: '0.4rem 0.8rem',
+                  background: selectedBatches.size === 0 ? undefined : '#059669',
+                  color: selectedBatches.size === 0 ? undefined : '#fff',
+                }}
+                title={`重试已选中批次中所有失败任务（无失败任务的批次自动跳过）`}
+              >
+                {batchRetrying
+                  ? '重试中...'
+                  : `重试已选失败任务 (${selectedBatches.size})`}
+              </button>
+              <button
+                type="button"
                 onClick={handleDeleteSelectedBatches}
                 disabled={selectedBatches.size === 0 || batchDeleting}
                 style={{
@@ -985,6 +1057,21 @@ export default function BatchGenerator({ groups, selectedGroupId }: Props) {
                               total={b.task_count}
                               theme={theme}
                             />
+                            {b.failed_count > 0 && (
+                              <span
+                                title={`${b.failed_count} 个任务失败，可在选中后点击「重试已选失败任务」`}
+                                style={{
+                                  fontSize: '0.72rem',
+                                  padding: '0.1rem 0.45rem',
+                                  borderRadius: '10px',
+                                  background: '#fee2e2',
+                                  color: '#991b1b',
+                                  border: '1px solid #fecaca',
+                                }}
+                              >
+                                ✕ {b.failed_count} 失败
+                              </span>
+                            )}
                             {theme.status === 'in_progress' && (
                               <BatchInlineProgress
                                 completed={b.completed_count}

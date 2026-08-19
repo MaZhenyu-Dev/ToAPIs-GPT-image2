@@ -90,6 +90,46 @@ async def get_failed_tasks_by_batch(
     return list(result.scalars().all())
 
 
+async def get_failed_tasks_by_batches(
+    db: AsyncSession, batch_ids: list[str]
+) -> list[GenerationTask]:
+    """跨批次获取所有失败任务（用于总览页一键重试）。"""
+    if not batch_ids:
+        return []
+    result = await db.execute(
+        select(GenerationTask)
+        .where(
+            GenerationTask.batch_id.in_(batch_ids),
+            GenerationTask.status == "failed",
+        )
+        .order_by(GenerationTask.id)
+    )
+    return list(result.scalars().all())
+
+
+async def count_failed_tasks_by_batches(
+    db: AsyncSession, batch_ids: list[str]
+) -> dict[str, int]:
+    """统计多个批次各自的失败任务数，返回 {batch_id: failed_count}。
+
+    用于批量重试前校验：过滤出「确实有失败任务」的批次，避免无谓提交。
+    """
+    if not batch_ids:
+        return {}
+    result = await db.execute(
+        select(
+            GenerationTask.batch_id,
+            func.count().label("cnt"),
+        )
+        .where(
+            GenerationTask.batch_id.in_(batch_ids),
+            GenerationTask.status == "failed",
+        )
+        .group_by(GenerationTask.batch_id)
+    )
+    return {row.batch_id: int(row.cnt) for row in result.all()}
+
+
 async def get_task_by_id(db: AsyncSession, task_id: int) -> GenerationTask | None:
     result = await db.execute(
         select(GenerationTask).where(GenerationTask.id == task_id)
@@ -136,6 +176,9 @@ async def get_recent_batches(
             func.sum(
                 case((GenerationTask.status == "completed", 1), else_=0)
             ).label("completed_count"),
+            func.sum(
+                case((GenerationTask.status == "failed", 1), else_=0)
+            ).label("failed_count"),
             func.max(GenerationTask.created_at).label("last_created_at"),
         )
         .group_by(GenerationTask.batch_id)
@@ -172,6 +215,7 @@ async def get_recent_batches(
                 "batch_id": row.batch_id,
                 "task_count": row.task_count,
                 "completed_count": row.completed_count or 0,
+                "failed_count": row.failed_count or 0,
                 "last_created_at": row.last_created_at,
             }
         )
