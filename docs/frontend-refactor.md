@@ -725,6 +725,17 @@ carrier/payload 与阶梯模型一致。MySQL 已 ALTER 加列；`npm run build`
 - **实测**：接口带 body `{model: vip, quality: medium}` → 任务从 gemini 切换为 vip/medium 并重置提交；
   `{model: gpt-image-2}` → quality 清空为 None；弹窗默认预填当前模型、模型切换精度区联动、取消正常关闭
 
+### 20.5 换机部署缺列修复（自动迁移登记）
+
+**现象**：拉到其他电脑启动报 `Unknown column 'generation_tasks.model'`——新电脑库为旧库拷贝，
+`create_all` 不会给已存在的表加列。
+
+**根因**：项目已有启动时自动迁移机制（`backend/app/migrations.py`，main.py lifespan 调用），
+但新增的 `model` / `quality` / `auto_retry_count` 三列**未登记进 `REQUIRED_COLUMNS`**。
+
+**修复**：三列已登记（MySQL 方言 DDL，SQLite 自动剥离 COMMENT），重启后自动补齐，幂等。
+实测：模拟缺列旧表 → 自动补全；已有列跳过不重复 ALTER。
+
 ---
 
 ## 17. 动效增强（平滑过渡）
