@@ -1,6 +1,10 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
 from backend.app.config import settings
 from backend.app.database import engine
 from backend.app.migrations import run_migrations
@@ -8,6 +12,9 @@ from backend.app.models import Base
 from backend.app.routers import batch, generations, product_swap, title_generation, variant_groups
 from backend.app.services.background_poller import background_poller
 from backend.app.toapis_client import client
+
+# 前端构建产物目录（生产模式单端口部署：npm run build 后直接访问后端端口）
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
 @asynccontextmanager
@@ -48,3 +55,15 @@ app.include_router(title_generation.router, prefix="/api")
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# 生产模式静态托管：前端 dist 存在时挂载到根路径（单端口访问）。
+# 必须放在所有 API 路由之后注册（"/" 兜底，/api/* 与 /health 优先匹配）。
+# 前端无 URL 路由（tab 状态切换），无需 SPA history fallback。
+# 开发模式用 vite dev server（--reload），dist 不存在时不影响。
+if FRONTEND_DIST.is_dir():
+    app.mount(
+        "/",
+        StaticFiles(directory=str(FRONTEND_DIST), html=True),
+        name="frontend",
+    )

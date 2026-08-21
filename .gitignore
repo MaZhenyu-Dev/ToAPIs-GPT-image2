@@ -106,3 +106,5 @@ site/
 *.rej
 *.tmp
 .history/
+
+.start-dev.bat
