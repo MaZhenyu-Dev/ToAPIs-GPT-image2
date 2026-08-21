@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createI2iMulti, uploadImage } from '../api'
-import { I2I_MULTI_FILENAME_PATTERN } from '../constants'
+import { I2I_MULTI_IMAGE_EXTS, MAX_I2I_MULTI_COUNT } from '../constants'
 import type {
   I2iMultiCreateResponse,
   ImageModelId,
@@ -23,7 +23,6 @@ export interface FolderRunProgress {
 }
 
 interface ScannedImage {
-  seq: number
   filename: string
   file: File
 }
@@ -50,6 +49,12 @@ export function isFsAccessSupported(): boolean {
   )
 }
 
+/** 名称自然排序（数字感知）：1.png, 2.png, ..., 10.png，与 Windows 资源管理器默认排序一致 */
+const naturalCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: 'base',
+})
+
 interface UseFolderBatchOptions {
   groupId: number | ''
   /** 选中变体组的变体数量 K（决定每批任务数） */
@@ -65,11 +70,9 @@ interface UseFolderBatchOptions {
 }
 
 export interface UseFolderBatchReturn {
-  /** 批量创建数量（快捷档位 + 自定义） */
-  count: number
-  setCount: (n: number) => void
-  customCount: string
-  setCustomCount: (v: string) => void
+  /** 用户自定义图片数量（空字符串 = 全部；最大 MAX_I2I_MULTI_COUNT） */
+  limit: string
+  setLimit: (v: string) => void
   /** 目录扫描 */
   dirHandle: { name: string } | null
   scanning: boolean
@@ -77,10 +80,8 @@ export interface UseFolderBatchReturn {
   scannedCount: number
   ignoredCount: number
   handlePickFolder: () => Promise<void>
-  /** seq 匹配 */
-  nextSeq: number | null
-  rangeMatched: { seq: number; filename: string }[]
-  missingSeqs: number[]
+  /** 将使用的图片（自然排序后取前 N 张，上限 300） */
+  selectedImages: ScannedImage[]
   canStart: boolean
   /** 运行 */
   progress: FolderRunProgress | null
@@ -93,10 +94,11 @@ export interface UseFolderBatchReturn {
  * 文件夹批量图生图逻辑（扫描 / 上传 / 创建），与 UI 解耦。
  *
  * 流程：
- * 1. showDirectoryPicker 选目录 → 扫描命名符合 `<数字>.png|jpg|jpeg` 的文件
- * 2. 按「下个批次号 seq 区间」过滤出实际匹配的图片（rangeMatched）
- * 3. runCreate：并发上传（信号量 5）→ /api/batches/i2i-multi 原子创建 N 个批次
- * 4. 任一上传失败 → 整批回滚，progress.phase = 'error'
+ * 1. showDirectoryPicker 选目录 → 扫描所有 png/jpg/jpeg 图片
+ * 2. 按文件名自然排序（数字感知，同 Windows 资源管理器默认排序）
+ * 3. 用户自定义数量（不填 = 全部，上限 300），取前 N 张
+ * 4. runCreate：并发上传（信号量 5）→ /api/batches/i2i-multi 原子创建 N 个批次
+ * 5. 任一上传失败 → 整批回滚，progress.phase = 'error'
  */
 export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchReturn {
   const {
@@ -105,14 +107,12 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
     size,
     resolution,
     prefix,
-    todayBatchInfo,
     refreshTodayCount,
     model,
     quality,
   } = options
 
-  const [count, setCountState] = useState<number>(10)
-  const [customCount, setCustomCount] = useState<string>('')
+  const [limit, setLimitState] = useState<string>('')
   const [scanned, setScanned] = useState<ScannedImage[]>([])
   const [dirHandle, setDirHandle] = useState<FSAccessDirectoryHandle | null>(null)
   const [scanning, setScanning] = useState(false)
@@ -128,47 +128,27 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
     }
   }, [])
 
-  const setCount = useCallback((n: number) => {
-    setCountState(n)
-    setCustomCount('')
+  const setLimit = useCallback((v: string) => {
+    setLimitState(v.replace(/[^\d]/g, ''))
   }, [])
 
-  // 期望 seq 起点：batch_id = {prefix}{MMDD}{seq}，跳过 prefix + 4 位日期只取尾部 seq
-  const nextSeq = useMemo(() => {
-    if (!todayBatchInfo) return null
-    const { next_batch_id, prefix: pfx } = todayBatchInfo
-    if (next_batch_id.length <= pfx.length + 4) return null
-    const seqStr = next_batch_id.slice(pfx.length + 4)
-    const n = parseInt(seqStr, 10)
-    return Number.isFinite(n) && n > 0 ? n : null
-  }, [todayBatchInfo])
+  // 实际使用的图片数量：不填 = 全部（上限 MAX_I2I_MULTI_COUNT）
+  const selectedCount = useMemo(() => {
+    if (limit === '') return Math.min(scanned.length, MAX_I2I_MULTI_COUNT)
+    const n = parseInt(limit, 10)
+    if (!Number.isFinite(n) || n <= 0) return 0
+    return Math.min(n, scanned.length, MAX_I2I_MULTI_COUNT)
+  }, [limit, scanned.length])
 
-  const rangeMatched = useMemo(() => {
-    if (nextSeq === null) return []
-    const start = nextSeq
-    const end = nextSeq + count - 1
-    return scanned
-      .filter((img) => img.seq >= start && img.seq <= end)
-      .sort((a, b) => a.seq - b.seq)
-  }, [scanned, nextSeq, count])
-
-  const missingSeqs = useMemo(() => {
-    if (nextSeq === null) return [] as number[]
-    const start = nextSeq
-    const end = nextSeq + count - 1
-    const have = new Set(rangeMatched.map((r) => r.seq))
-    const missing: number[] = []
-    for (let s = start; s <= end; s++) {
-      if (!have.has(s)) missing.push(s)
-    }
-    return missing
-  }, [nextSeq, count, rangeMatched])
+  const selectedImages = useMemo(
+    () => scanned.slice(0, selectedCount),
+    [scanned, selectedCount]
+  )
 
   const canStart =
     !!groupId &&
     variantCount > 0 &&
-    nextSeq !== null &&
-    rangeMatched.length > 0 &&
+    selectedImages.length > 0 &&
     progress?.phase !== 'uploading' &&
     progress?.phase !== 'creating'
 
@@ -200,15 +180,20 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
     try {
       for await (const [name, entry] of handle.entries()) {
         if (entry.kind !== 'file') continue
-        const m = I2I_MULTI_FILENAME_PATTERN.exec(name)
-        if (!m || !entry.getFile) {
+        const ext = name.toLowerCase().split('.').pop() ?? ''
+        if (!I2I_MULTI_IMAGE_EXTS.includes(ext as (typeof I2I_MULTI_IMAGE_EXTS)[number])) {
+          ignored += 1
+          continue
+        }
+        if (!entry.getFile) {
           ignored += 1
           continue
         }
         const file = await entry.getFile()
-        found.push({ seq: parseInt(m[1], 10), filename: name, file })
+        found.push({ filename: name, file })
       }
-      found.sort((a, b) => a.seq - b.seq)
+      // 名称自然排序（数字感知）：1.png, 2.png, ..., 10.png（Windows 默认顺序）
+      found.sort((a, b) => naturalCollator.compare(a.filename, b.filename))
       if (mountedRef.current) {
         setScanned(found)
         setIgnoredCount(ignored)
@@ -225,15 +210,15 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
   }, [])
 
   const runCreate = useCallback(async () => {
-    if (rangeMatched.length === 0) return
+    if (selectedImages.length === 0) return
     setProgress({
       phase: 'uploading',
       uploaded: 0,
-      totalToUpload: rangeMatched.length,
+      totalToUpload: selectedImages.length,
     })
 
     // Phase 1：并发上传（信号量 UPLOAD_CONCURRENCY），任一失败整批回滚
-    const urls: string[] = new Array(rangeMatched.length)
+    const urls: string[] = new Array(selectedImages.length)
     let uploaded = 0
     let firstError: string | null = null
 
@@ -271,7 +256,7 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
 
     let uploadFailed = false
     await Promise.all(
-      rangeMatched.map(async (img, idx) => {
+      selectedImages.map(async (img, idx) => {
         await acquire()
         try {
           await uploadOne(idx, img)
@@ -288,9 +273,10 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
         setProgress({
           phase: 'error',
           uploaded,
-          totalToUpload: rangeMatched.length,
+          totalToUpload: selectedImages.length,
           errorMsg:
-            firstError || `已上传 ${uploaded}/${rangeMatched.length} 张；任一失败将整体回滚`,
+            firstError ||
+            `已上传 ${uploaded}/${selectedImages.length} 张；任一失败将整体回滚`,
         })
       }
       return
@@ -314,8 +300,8 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
       if (mountedRef.current) {
         setProgress({
           phase: 'done',
-          uploaded: rangeMatched.length,
-          totalToUpload: rangeMatched.length,
+          uploaded: selectedImages.length,
+          totalToUpload: selectedImages.length,
           result,
         })
         void refreshTodayCount(prefix)
@@ -324,13 +310,13 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
       if (mountedRef.current) {
         setProgress({
           phase: 'error',
-          uploaded: rangeMatched.length,
-          totalToUpload: rangeMatched.length,
+          uploaded: selectedImages.length,
+          totalToUpload: selectedImages.length,
           errorMsg: err instanceof Error ? err.message : '创建批次失败',
         })
       }
     }
-  }, [rangeMatched, groupId, size, resolution, prefix, refreshTodayCount])
+  }, [selectedImages, groupId, size, resolution, prefix, refreshTodayCount])
 
   const resetRun = useCallback(() => {
     setProgress(null)
@@ -341,19 +327,15 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
   }, [])
 
   return {
-    count,
-    setCount,
-    customCount,
-    setCustomCount,
+    limit,
+    setLimit,
     dirHandle,
     scanning,
     scanError,
     scannedCount: scanned.length,
     ignoredCount,
     handlePickFolder,
-    nextSeq,
-    rangeMatched,
-    missingSeqs,
+    selectedImages,
     canStart,
     progress,
     runCreate,

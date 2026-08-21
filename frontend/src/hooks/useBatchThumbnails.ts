@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { getBatchStatus } from '../api'
+import { getBatchThumbnails } from '../api'
 import type { BatchSummary } from '../types'
-
-const MAX_THUMBS_PER_BATCH = 4
-const FETCH_CONCURRENCY = 4
 
 export interface BatchThumbnailsResult {
   /** batch_id → 已完成图片 URL（最多 4 张） */
@@ -15,10 +12,11 @@ export interface BatchThumbnailsResult {
 /**
  * 批次列表缩略图：为列表中的批次拉取已完成图片 URL。
  *
- * 设计约束（避免给后端造成压力）：
+ * 设计约束（支撑大分页 100/200/300）：
  * - 仅对 completed_count > 0 的批次发起请求
- * - 每个 batch_id 只拉取一次，结果缓存在 ref（列表自动刷新不重拉）
- * - 并发限制 4
+ * - 一次批量接口（/api/batches/thumbnails）返回全部批次缩略图，
+ *   替代逐批次调 status（N 次请求 → 1 次）
+ * - 结果缓存在 ref（列表自动刷新不重拉）
  * - 拉取失败静默跳过，不重试
  */
 export function useBatchThumbnails(batches: BatchSummary[]): BatchThumbnailsResult {
@@ -41,39 +39,23 @@ export function useBatchThumbnails(batches: BatchSummary[]): BatchThumbnailsResu
     )
     if (targets.length === 0) return
 
+    const ids = targets.map((b) => b.batch_id)
+    ids.forEach((id) => fetched.current.add(id))
     setLoading(true)
-    let cursor = 0
-    let finished = 0
-    const pending = targets.length
 
-    async function worker(): Promise<void> {
-      while (cursor < targets.length) {
-        const batch = targets[cursor++]
-        fetched.current.add(batch.batch_id)
-        try {
-          const status = await getBatchStatus(batch.batch_id)
-          const urls = status.tasks
-            .filter((t) => t.status === 'completed' && t.image_url)
-            .slice(0, MAX_THUMBS_PER_BATCH)
-            .map((t) => t.image_url as string)
-          cache.current[batch.batch_id] = urls
-          if (mounted.current) {
-            setThumbnails((prev) => ({ ...prev, [batch.batch_id]: urls }))
-          }
-        } catch {
-          // 拉取失败静默：缩略图非关键信息，且不回填 cache 避免重试
-        } finally {
-          finished += 1
-          if (finished === pending && mounted.current) {
-            setLoading(false)
-          }
-        }
-      }
-    }
-
-    void Promise.all(
-      Array.from({ length: Math.min(FETCH_CONCURRENCY, targets.length) }, () => worker())
-    )
+    void getBatchThumbnails(ids)
+      .then((result) => {
+        if (!mounted.current) return
+        cache.current = { ...cache.current, ...result }
+        setThumbnails((prev) => ({ ...prev, ...result }))
+      })
+      .catch(() => {
+        // 拉取失败静默：缩略图非关键信息，且不回填 fetched 避免立即重试
+        ids.forEach((id) => fetched.current.delete(id))
+      })
+      .finally(() => {
+        if (mounted.current) setLoading(false)
+      })
   }, [batches])
 
   return { thumbnails, loading }

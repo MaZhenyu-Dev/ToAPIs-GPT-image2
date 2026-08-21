@@ -57,6 +57,18 @@ export interface BatchGenerateRequest {
   // 生图模型 + 精度档位（默认 gpt-image-2；quality 仅部分模型支持）
   model?: ImageModelId
   quality?: ImageQuality
+  // 自动接力套图：裂变批次全部结束后，自动用其已完成图片创建套图批次（可选）
+  relay?: AutoRelayConfig
+}
+
+// 自动接力套图配置（与后端 RelayConfig 对齐）
+export interface AutoRelayConfig {
+  group_id: number
+  prefix?: string // 套图批次前缀，独立于裂变前缀，默认 "TAO"
+  size: string
+  resolution: string
+  model?: ImageModelId
+  quality?: ImageQuality
 }
 
 // 产品替换请求：上传 1 张模板图 + N 张产品图，生成 N 张结果图
@@ -116,7 +128,7 @@ export interface BatchSummary {
   task_count: number
   completed_count: number
   failed_count: number
-  // 批次内任务的最大重试次数（>0 表示该批次被重试过，列表置顶 + 换色）
+  // 批次内任务的最大重试次数（>0 表示该批次被重试过，列表显示「重试 ×N」徽章）
   retried_count: number
   last_created_at: string
 }

@@ -242,6 +242,9 @@ class BatchGenerateRequest(SizeResolutionMixin, ModelQualityMixin):
     mode: GENERATION_MODE = "t2i"
     reference_image_urls: Optional[list[str]] = Field(default_factory=list)
     prefix: str = Field(default="MZY", description="批次号前缀，仅允许 A-Z / 0-9")
+    relay: Optional["RelayConfig"] = Field(
+        default=None, description="自动接力套图配置（可选，传则批次完成后自动创建套图）"
+    )
 
     @field_validator("prefix")
     @classmethod
@@ -256,6 +259,27 @@ class BatchGenerateRequest(SizeResolutionMixin, ModelQualityMixin):
         if self.mode == "i2i" and not self.reference_image_urls:
             raise ValueError("图生图模式必须提供参考图 URL")
         return self
+
+
+class RelayConfig(SizeResolutionMixin, ModelQualityMixin):
+    """自动接力套图配置：裂变批次全部结束后，自动用其已完成图片创建套图批次。
+
+    挂在 ``BatchGenerateRequest.relay`` 上；不传则不接力（维持现状）。
+    套图批次号前缀独立于裂变前缀（如 TAO），seq 按套图前缀独立分配。
+    与手动接力（前端收集已完成图后调 /api/batches/i2i-multi）共用同一套
+    i2i_multi 创建逻辑。
+    """
+
+    group_id: int = Field(..., ge=1)
+    prefix: str = Field(default="TAO", description="套图批次前缀，仅允许 A-Z / 0-9")
+
+    @field_validator("prefix")
+    @classmethod
+    def validate_prefix(cls, v: str) -> str:
+        v = v.upper()
+        if not BATCH_PREFIX_PATTERN.match(v):
+            raise ValueError("prefix 仅支持 1-10 位 A-Z / 0-9 字符")
+        return v
 
 
 class ProductSwapRequest(SizeResolutionMixin, ModelQualityMixin):
@@ -362,7 +386,7 @@ class BatchSummary(BaseModel):
     task_count: int
     completed_count: int
     failed_count: int = 0
-    # 批次内任务的最大重试次数（>0 表示该批次被重试过，列表置顶 + 换色）
+    # 批次内任务的最大重试次数（>0 表示该批次被重试过，列表显示「重试 ×N」徽章）
     retried_count: int = 0
     last_created_at: datetime
 

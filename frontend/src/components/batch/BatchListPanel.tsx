@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  createI2iMulti,
   deleteBatch,
   deleteBatches,
   getBatchStatus,
@@ -11,7 +12,12 @@ import { exportBatchesToDirectory } from '../../lib/fsDownload'
 import type { BatchExportProgress } from '../../lib/fsDownload'
 import { isFsAccessSupported, pickDirectory } from '../../lib/fsDownload'
 import { useBatchThumbnails } from '../../hooks/useBatchThumbnails'
-import type { BatchListResponse, BatchSummary } from '../../types'
+import { MAX_I2I_MULTI_COUNT } from '../../constants'
+import type {
+  BatchListResponse,
+  BatchSummary,
+  VariantGroupListItem,
+} from '../../types'
 import Badge from '../ui/Badge'
 import EmptyState from '../ui/EmptyState'
 import FadeInImage from '../ui/FadeInImage'
@@ -20,9 +26,15 @@ import ProgressBar from '../ui/ProgressBar'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { useToast } from '../ui/Toast'
 import { IconLayers } from '../ui/Icon'
+import AutoRelayDialog from './AutoRelayDialog'
+import type { RelayStats } from './AutoRelayDialog'
+import type { AutoRelayConfig } from '../../types'
 
 const LIST_POLL_INTERVAL_MS = 3000
-const PAGE_SIZE_OPTIONS = [5, 10, 20, 50] as const
+const SEARCH_DEBOUNCE_MS = 300
+// 大分页：后端排序在 Python 端全量完成（无 SQL 深分页），
+// 缩略图走批量接口，100/200/300 页大小无压力
+const PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 300] as const
 
 interface BatchListPanelProps {
   /** 外部（如创建新批次后）触发重新加载 */
@@ -30,6 +42,8 @@ interface BatchListPanelProps {
   onOpenBatch: (batchId: string) => void
   /** 数据变更（增/删/重试）后通知外部（用于刷新批次号计数） */
   onDataChanged: () => void
+  /** 变体组列表（接力套图弹窗选择套图提示词用） */
+  groups: VariantGroupListItem[]
 }
 
 interface ExportState {
@@ -45,6 +59,7 @@ export default function BatchListPanel({
   refreshKey,
   onOpenBatch,
   onDataChanged,
+  groups,
 }: BatchListPanelProps) {
   const toast = useToast()
   const confirm = useConfirm()
@@ -52,18 +67,23 @@ export default function BatchListPanel({
   const [batches, setBatches] = useState<BatchSummary[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState<number>(10)
+  const [pageSize, setPageSize] = useState<number>(20)
   const [totalPages, setTotalPages] = useState(0)
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [selectedBatches, setSelectedBatches] = useState<Set<string>>(new Set())
   const [deleting, setDeleting] = useState(false)
   const [retrying, setRetrying] = useState(false)
+  const [relayCollecting, setRelayCollecting] = useState(false)
+  const [relayStats, setRelayStats] = useState<RelayStats | null>(null)
   const [exportState, setExportState] = useState<ExportState>({
     progress: null,
     exporting: false,
   })
   const mounted = useRef(true)
+  const requestSeq = useRef(0)
+  const searchRef = useRef('')
+  const searchTimer = useRef<number | null>(null)
 
   useEffect(() => {
     mounted.current = true
@@ -73,14 +93,23 @@ export default function BatchListPanel({
   }, [])
 
   const loadPage = useCallback(
-    async (targetPage: number, targetPageSize: number, silent = false) => {
+    async (
+      targetPage: number,
+      targetPageSize: number,
+      silent = false,
+      searchQuery?: string
+    ) => {
+      // 竞态保护：快速连续搜索/翻页时只应用最新一次请求的结果
+      const seq = ++requestSeq.current
+      const q = searchQuery ?? searchRef.current
       if (!silent) setLoading(true)
       try {
         const response: BatchListResponse = await listRecentBatches({
           page: targetPage,
           pageSize: targetPageSize,
+          q: q || undefined,
         })
-        if (!mounted.current) return
+        if (!mounted.current || seq !== requestSeq.current) return
         setBatches(response.batches)
         setTotal(response.total)
         setTotalPages(response.total_pages)
@@ -98,11 +127,30 @@ export default function BatchListPanel({
       } catch {
         // 列表非关键信息，失败静默（保留旧数据）
       } finally {
-        if (mounted.current && !silent) setLoading(false)
+        if (mounted.current && !silent && seq === requestSeq.current) {
+          setLoading(false)
+        }
       }
     },
     []
   )
+
+  // 搜索输入：300ms 防抖后请求后端全库模糊查询（通配符后端已按字面转义）
+  const handleSearchChange = (value: string) => {
+    setSearch(value)
+    searchRef.current = value.trim()
+    if (searchTimer.current !== null) window.clearTimeout(searchTimer.current)
+    searchTimer.current = window.setTimeout(() => {
+      void loadPage(1, pageSize, false, searchRef.current)
+    }, SEARCH_DEBOUNCE_MS)
+  }
+
+  // 卸载时清理防抖定时器
+  useEffect(() => {
+    return () => {
+      if (searchTimer.current !== null) window.clearTimeout(searchTimer.current)
+    }
+  }, [])
 
   // 初次挂载 / 外部刷新键变化时加载第 1 页
   useEffect(() => {
@@ -125,13 +173,6 @@ export default function BatchListPanel({
 
   const thumbnails = useBatchThumbnails(batches)
 
-  // 搜索：当前页内按 batch_id 子串过滤
-  const filteredBatches = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    if (!q) return batches
-    return batches.filter((b) => b.batch_id.toLowerCase().includes(q))
-  }, [batches, search])
-
   const toggleBatch = (batchId: string) => {
     setSelectedBatches((prev) => {
       const next = new Set(prev)
@@ -142,7 +183,7 @@ export default function BatchListPanel({
   }
 
   const toggleSelectAll = () => {
-    const visible = filteredBatches.map((b) => b.batch_id)
+    const visible = batches.map((b) => b.batch_id)
     const allSelected =
       visible.length > 0 && visible.every((id) => selectedBatches.has(id))
     if (allSelected) {
@@ -205,7 +246,7 @@ export default function BatchListPanel({
   const handleRetrySelected = async () => {
     if (selectedBatches.size === 0) return
     const selectedIds = Array.from(selectedBatches)
-    const failedInSelected = filteredBatches.filter(
+    const failedInSelected = batches.filter(
       (b) => selectedBatches.has(b.batch_id) && b.failed_count > 0
     )
     const failedTaskCount = failedInSelected.reduce(
@@ -244,6 +285,92 @@ export default function BatchListPanel({
       toast.error(err instanceof Error ? err.message : '批量重试失败')
     } finally {
       setRetrying(false)
+    }
+  }
+
+  // ---------- 接力套图 ----------
+
+  /** 收集到的图片 URL（弹窗确认后提交用；弹窗只展示统计） */
+  const relayUrlsRef = useRef<string[]>([])
+
+  /** 收集选中批次中的已完成图片，供接力弹窗预览（无图时直接提示返回） */
+  const handleRelayCollect = async () => {
+    if (selectedBatches.size === 0) return
+    const selectedIds = Array.from(selectedBatches)
+    setRelayCollecting(true)
+    try {
+      const imageUrls: string[] = []
+      const skippedBatchIds: string[] = []
+      for (const batchId of selectedIds) {
+        let status
+        try {
+          status = await getBatchStatus(batchId)
+        } catch {
+          skippedBatchIds.push(batchId)
+          continue
+        }
+        const completed = status.tasks.filter(
+          (t) => t.status === 'completed' && t.image_url
+        )
+        if (completed.length === 0) {
+          skippedBatchIds.push(batchId)
+          continue
+        }
+        imageUrls.push(...completed.map((t) => t.image_url!))
+      }
+
+      if (imageUrls.length === 0) {
+        toast.warning('选中的批次没有已完成图片，无法接力套图')
+        return
+      }
+
+      let usableUrls = imageUrls
+      if (imageUrls.length > MAX_I2I_MULTI_COUNT) {
+        usableUrls = imageUrls.slice(0, MAX_I2I_MULTI_COUNT)
+        toast.warning(
+          `图片数量 ${imageUrls.length} 超过单次上限 ${MAX_I2I_MULTI_COUNT}，仅使用前 ${MAX_I2I_MULTI_COUNT} 张`
+        )
+      }
+
+      relayUrlsRef.current = usableUrls
+      setRelayStats({
+        batchCount: selectedIds.length,
+        imageCount: usableUrls.length,
+        skippedCount: skippedBatchIds.length,
+      })
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '收集已完成图片失败')
+    } finally {
+      setRelayCollecting(false)
+    }
+  }
+
+  /** 弹窗确认后：用收集到的图片批量创建套图批次 */
+  const handleRelayConfirm = async (config: AutoRelayConfig) => {
+    const urls = relayUrlsRef.current
+    if (urls.length === 0) return
+    try {
+      const result = await createI2iMulti({
+        group_id: config.group_id,
+        image_urls: urls,
+        prefix: config.prefix,
+        size: config.size,
+        resolution: config.resolution,
+        model: config.model,
+        quality: config.quality,
+      })
+      setRelayStats(null)
+      setSelectedBatches(new Set())
+      toast.success(
+        `接力套图成功：创建 ${result.batch_ids.length} 个批次、${result.task_count} 个任务` +
+          (relayStats?.skippedCount
+            ? `（${relayStats.skippedCount} 个批次无已完成图片已跳过）`
+            : '')
+      )
+      onDataChanged()
+      await loadPage(page, pageSize)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '接力套图失败')
     }
   }
 
@@ -369,7 +496,7 @@ export default function BatchListPanel({
     void loadPage(target, pageSize)
   }
 
-  const visibleIds = filteredBatches.map((b) => b.batch_id)
+  const visibleIds = batches.map((b) => b.batch_id)
   const allSelected =
     visibleIds.length > 0 && visibleIds.every((id) => selectedBatches.has(id))
   const someSelected = visibleIds.some((id) => selectedBatches.has(id))
@@ -380,7 +507,7 @@ export default function BatchListPanel({
         <h3 className="batch-list-title">
           近期批次{' '}
           <span className="batch-list-count">
-            {search ? `匹配 ${filteredBatches.length} / 共 ${total} 条` : `共 ${total} 条`}
+            {search ? `匹配 ${total} 条` : `共 ${total} 条`}
           </span>
         </h3>
         <div className="batch-list-actions">
@@ -388,8 +515,8 @@ export default function BatchListPanel({
             type="search"
             className="batch-search"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索批次号（如 MZY0801）"
+            onChange={(e) => handleSearchChange(e.target.value)}
+            placeholder="搜索批次号（全库模糊查询，如 0821 / TAO）"
             aria-label="搜索批次号"
           />
           <GlassButton
@@ -399,6 +526,15 @@ export default function BatchListPanel({
             disabled={selectedBatches.size === 0 || retrying}
           >
             {retrying ? '重试中…' : `重试失败任务 (${selectedBatches.size})`}
+          </GlassButton>
+          <GlassButton
+            size="sm"
+            variant="secondary"
+            onClick={() => void handleRelayCollect()}
+            disabled={selectedBatches.size === 0 || relayCollecting}
+            title="将已选批次中已完成的产品图作为参考图，批量创建套图批次"
+          >
+            {relayCollecting ? '收集图片中…' : `接力套图 (${selectedBatches.size})`}
           </GlassButton>
           <GlassButton
             size="sm"
@@ -451,7 +587,7 @@ export default function BatchListPanel({
         <SelectAllCheckbox
           allSelected={allSelected}
           someSelected={someSelected}
-          disabled={filteredBatches.length === 0}
+          disabled={batches.length === 0}
           onToggle={toggleSelectAll}
         />
         <span className="batch-legend-sep" aria-hidden="true" />
@@ -465,7 +601,7 @@ export default function BatchListPanel({
         <div style={{ padding: '2rem 0', textAlign: 'center' }}>
           <span className="config-meta">加载中…</span>
         </div>
-      ) : filteredBatches.length === 0 ? (
+      ) : batches.length === 0 ? (
         search ? (
           <EmptyState
             title="没有匹配的批次"
@@ -480,7 +616,7 @@ export default function BatchListPanel({
         )
       ) : (
         <div className="batch-list">
-          {filteredBatches.map((batch) => (
+          {batches.map((batch) => (
             <BatchCard
               key={batch.batch_id}
               batch={batch}
@@ -540,6 +676,17 @@ export default function BatchListPanel({
             </GlassButton>
           </div>
         </div>
+      )}
+
+      {/* 接力套图弹窗（与自动接力共用同一样式/组件） */}
+      {relayStats && (
+        <AutoRelayDialog
+          initial={null}
+          stats={relayStats}
+          groups={groups}
+          onConfirm={(config) => void handleRelayConfirm(config)}
+          onClose={() => setRelayStats(null)}
+        />
       )}
     </div>
   )

@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+import re
+
 from sqlalchemy import case, delete, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,6 +10,9 @@ from backend.app.models import GenerationTask
 # 集中在此处供 services.batch_generator 与 routers.batch 共同引用，
 # 避免循环依赖。
 BEIJING_TZ = timezone(timedelta(hours=8))
+
+# batch_id 尾部的连续数字段（= MMDD + seq，prefix 以数字结尾时更长）
+_SEQ_SUFFIX_RE = re.compile(r"(\d+)$")
 
 
 def _format_seq(seq: int) -> str:
@@ -29,6 +34,34 @@ def parse_batch_id_seq(batch_id: str, prefix: str, date_str: str) -> int:
         )
     seq_str = batch_id[len(prefix_with_date):]
     return int(seq_str)
+
+
+def _batch_sort_key(batch_id: str) -> tuple[int, str, int]:
+    """近期批次排序键：完全基于批次号，与创建/重试时间无关。
+
+    batch_id 格式 {prefix}{MMDD}{seq}：
+    - prefix: 用户自定义（1-10 位 A-Z / 0-9）
+    - MMDD: 北京时间月日（4 位，如 "0803"）
+    - seq: 当天该 prefix 下的序号（<100 补 0 为 2 位，>=100 自然展开）
+
+    排序（倒序）：
+    1. MMDD 数值倒序：当天的批次排最前（用户反馈：当天任务应在列表前面）
+    2. 同日期内 prefix 倒序
+    3. 同前缀内 seq 数值倒序（用户反馈：同前缀按最后序号排列）
+
+    解析：seq = 尾部连续数字段去掉前 4 位（MMDD），前缀 = batch_id 去掉 seq。
+    这样列表位置只由批次号决定：重试/重新生成会刷新 created_at，但批次不会上移。
+
+    注意：prefix 以数字结尾时（罕见），去掉前 4 位会截到 prefix 尾部，
+    但同前缀内解析值仍与真实 seq 单调一致，不影响排序正确性。
+    旧格式 UUID（非 {prefix}{MMDD}{seq} 结构）降级为日期 0 + 整串 + seq=0，排最后。
+    """
+    m = _SEQ_SUFFIX_RE.search(batch_id)
+    if not m or len(m.group(1)) <= 4:
+        return (0, batch_id, 0)
+    seq_str = m.group(1)[4:]
+    group = batch_id[: -len(seq_str)]  # prefix + MMDD
+    return (int(group[-4:]), group[:-4], int(seq_str))
 
 
 async def find_existing_batch_ids(
@@ -73,6 +106,33 @@ async def get_tasks_by_batch(
         .order_by(GenerationTask.id)
     )
     return list(result.scalars().all())
+
+
+async def get_batch_thumbnails(
+    db: AsyncSession, batch_ids: list[str], per_batch: int = 4
+) -> dict[str, list[str]]:
+    """批量获取批次的已完成图片 URL（每批最多 per_batch 张），用于列表缩略图。
+
+    一次查询返回全部批次的 completed image_url（按任务 id 排序），
+    Python 端分组截断——替代前端对每个批次单独调 status 接口（N 次请求 → 1 次）。
+    """
+    if not batch_ids:
+        return {}
+    result = await db.execute(
+        select(GenerationTask.batch_id, GenerationTask.image_url)
+        .where(
+            GenerationTask.batch_id.in_(batch_ids),
+            GenerationTask.status == "completed",
+            GenerationTask.image_url.isnot(None),
+        )
+        .order_by(GenerationTask.id)
+    )
+    out: dict[str, list[str]] = {}
+    for batch_id, image_url in result.all():
+        urls = out.setdefault(batch_id, [])
+        if len(urls) < per_batch:
+            urls.append(image_url)
+    return out
 
 
 async def get_failed_tasks_by_batch(
@@ -161,61 +221,57 @@ async def get_incomplete_tasks(
 
 
 async def get_recent_batches(
-    db: AsyncSession, page: int = 1, page_size: int = 10
+    db: AsyncSession,
+    page: int = 1,
+    page_size: int = 10,
+    query: str | None = None,
 ) -> tuple[list[dict], int]:
     """分页获取最近的批次列表，包含任务数量与状态统计。
 
     返回 (batches, total) 元组：batches 为当前页数据，total 为总批次数。
+
+    ``query``：批次号全库模糊搜索（任意位置子串匹配）。
+    企业级规范：
+    - 参数化查询（SQLAlchemy 绑定参数，防 SQL 注入）
+    - LIKE 通配符转义：用户输入的 ``%`` / ``_`` / ``\\`` 按字面匹配，
+      不会意外匹配全库（escape="\\"）
+    - 过滤在 GROUP BY 之前下推，只聚合匹配批次，全库扫描成本可控
+      （当前量级毫秒级；LIKE '%..%' 无索引可用属预期，数据量到
+      十万级仍为几十毫秒量级）
+
+    排序在 Python 端完成（见 _batch_sort_key）：完全按批次号
+    （MMDD 倒序 → 同日期 prefix 倒序 → 同前缀 seq 数值倒序）。
+    不依赖 created_at —— 重试/重新生成会刷新任务的 created_at，
+    但批次在列表中的位置不变：当天批次始终在最前，同前缀批次
+    按最后序号排列（用户反馈：不要置顶、不要因重试上移、当天批次在前）。
     """
-    offset = (page - 1) * page_size
-
-    subq = (
-        select(
-            GenerationTask.batch_id,
-            func.count().label("task_count"),
-            func.sum(
-                case((GenerationTask.status == "completed", 1), else_=0)
-            ).label("completed_count"),
-            func.sum(
-                case((GenerationTask.status == "failed", 1), else_=0)
-            ).label("failed_count"),
-            func.max(GenerationTask.retried_count).label("retried_count"),
-            func.max(GenerationTask.created_at).label("last_created_at"),
+    where = None
+    if query:
+        # 转义 LIKE 通配符，用户输入按字面匹配
+        escaped = (
+            query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         )
-        .group_by(GenerationTask.batch_id)
-        .subquery()
+        where = GenerationTask.batch_id.like(f"%{escaped}%", escape="\\")
+
+    stmt = select(
+        GenerationTask.batch_id,
+        func.count().label("task_count"),
+        func.sum(
+            case((GenerationTask.status == "completed", 1), else_=0)
+        ).label("completed_count"),
+        func.sum(
+            case((GenerationTask.status == "failed", 1), else_=0)
+        ).label("failed_count"),
+        func.max(GenerationTask.retried_count).label("retried_count"),
+        func.max(GenerationTask.created_at).label("last_created_at"),
     )
+    # 注意：不能无条件 .where(None)——SQLAlchemy 会编译出 "WHERE NULL"，
+    # MySQL 下恒假导致返回空列表
+    if where is not None:
+        stmt = stmt.where(where)
+    subq = stmt.group_by(GenerationTask.batch_id).subquery()
 
-    # 先统计总批次数（按 batch_id 去重后的行数）
-    total_result = await db.execute(select(func.count()).select_from(subq))
-    total = int(total_result.scalar_one() or 0)
-
-    # 排序设计：
-    # 1. 「重试过的批次」（max(retried_count) > 0）置顶，内部按 seq 数值倒序
-    #    （LENGTH DESC + 字典序 DESC = 数值倒序，见下方注释）；
-    # 2. 其余批次保持原有排序：最近创建时间倒序 + seq 数值倒序。
-    # 这样「今天重试的旧批次」整组靠前且序号连续，与当天新建批次不混排。
-    #
-    # 排序 key 说明：
-    # - last_created_at DESC: 刚创建的批次排前面
-    # - LENGTH(batch_id) DESC, batch_id DESC: 当一批 i2i_multi 同时创建 N 个批次时
-    #   （所有任务同一次 commit，created_at 几乎一致），需要按 seq 数值倒序作为
-    #   稳定二级排序。注意：_format_seq 对 seq < 100 做 0 补齐（"01".."99"），
-    #   但对 seq ≥ 100 走 str(seq)（"100"），此时纯字典序会错排
-    #   （"100" < "89"，因为 '1' < '8'），所以先按 LENGTH DESC 让"位数多 =
-    #   seq 更大"先成立，等长时再字典序 = 数值序。
-    result = await db.execute(
-        select(subq)
-        .order_by(
-            case((subq.c.retried_count > 0, 0), else_=1),
-            subq.c.last_created_at.desc(),
-            func.length(subq.c.batch_id).desc(),
-            subq.c.batch_id.desc(),
-        )
-        .offset(offset)
-        .limit(page_size)
-    )
-
+    result = await db.execute(select(subq))
     rows = []
     for row in result.all():
         rows.append(
@@ -228,7 +284,13 @@ async def get_recent_batches(
                 "last_created_at": row.last_created_at,
             }
         )
-    return rows, total
+
+    # 前缀倒序（新日期在前）+ 组内 seq 数值倒序（新序号在前）
+    rows.sort(key=lambda b: _batch_sort_key(b["batch_id"]), reverse=True)
+
+    total = len(rows)
+    offset = (page - 1) * page_size
+    return rows[offset : offset + page_size], total
 
 
 async def count_batches_in_batches(db: AsyncSession, batch_ids: list[str]) -> int:
@@ -332,7 +394,7 @@ async def reset_task_for_regenerate(
     计时基准，若重试/重新生成后不刷新它，第二天重试的任务会因 created_at
     是昨天的而被轮询器立刻判超时标 failed（连 ToAPIs 都不查）。
 
-    **重试计数 +1**：总览页据此识别「重试过的批次」并置顶 + 换色。
+    **重试计数 +1**：总览页据此识别「重试过的批次」并显示「重试 ×N」徽章。
     """
     task.status = "pending"
     task.progress = 0

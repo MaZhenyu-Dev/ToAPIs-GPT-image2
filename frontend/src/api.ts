@@ -160,16 +160,20 @@ export function regenerateTask(
 export interface BatchListParams {
   page?: number
   pageSize?: number
+  /** 批次号模糊搜索（任意位置子串匹配，后端转义通配符） */
+  q?: string
 }
 
 export function listRecentBatches(
   params: BatchListParams = {}
 ): Promise<BatchListResponse> {
   const page = params.page ?? 1
-  const pageSize = params.pageSize ?? 10
-  return fetchJson<BatchListResponse>(
-    `/api/batches?page=${page}&page_size=${pageSize}`
-  )
+  const pageSize = params.pageSize ?? 20
+  const q = params.q?.trim() ?? ''
+  const query = q
+    ? `?page=${page}&page_size=${pageSize}&q=${encodeURIComponent(q)}`
+    : `?page=${page}&page_size=${pageSize}`
+  return fetchJson<BatchListResponse>(`/api/batches${query}`)
 }
 
 export function deleteBatch(batchId: string): Promise<BatchDeleteResponse> {
@@ -199,6 +203,16 @@ export function getTodayBatchCount(prefix: string): Promise<TodayBatchCount> {
   return fetchJson<TodayBatchCount>(
     `/api/batches/today-count?prefix=${encodeURIComponent(prefix)}`
   )
+}
+
+// 批量获取批次的已完成图片 URL（每批最多 4 张），列表缩略图用
+// 一次请求替代 N 次 status 请求，支撑大分页（100/200/300）
+export function getBatchThumbnails(
+  batchIds: string[]
+): Promise<Record<string, string[]>> {
+  if (batchIds.length === 0) return Promise.resolve({})
+  const qs = batchIds.map((id) => `batch_ids=${encodeURIComponent(id)}`).join('&')
+  return fetchJson<Record<string, string[]>>(`/api/batches/thumbnails?${qs}`)
 }
 
 // ---------- 文件夹批量图生图（i2i_multi） ----------

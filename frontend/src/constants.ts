@@ -91,20 +91,24 @@ export const DEFAULT_BATCH_PREFIX = 'MZY'
 export const BATCH_PREFIX_PATTERN = /^[A-Z0-9]{1,10}$/
 export const BATCH_PREFIX_STORAGE_KEY = 'gpt2.batchPrefix'
 
+// 接力套图批次前缀：独立于裂变前缀，持久化记忆（设一次长期生效，可随时改）
+export const DEFAULT_RELAY_PREFIX = 'TAO'
+export const RELAY_PREFIX_STORAGE_KEY = 'gpt2.relayPrefix'
+
 // 产品替换模式：产品图数量上下限（与后端 MIN/MAX_PRODUCT_SWAP_COUNT 同步）
 export const MIN_PRODUCT_SWAP_COUNT = 1
 export const MAX_PRODUCT_SWAP_COUNT = 20
 
-// 文件夹批量图生图（i2i_multi）模式：一次请求创建的批次数量上下限
-// 与后端 MIN/MAX_I2I_MULTI_COUNT 同步；ToAPIs 官方并发升级后放开到 500
+// 文件夹批量图生图（i2i_multi）模式：一次请求创建的批次数量上限
+// 用户产品决策：单次最多 300 个批次（后端 MAX_I2I_MULTI_COUNT=500 兼容，
+// 前端限 300）；数量不填默认读取全部图片
 export const MIN_I2I_MULTI_COUNT = 1
-export const MAX_I2I_MULTI_COUNT = 500
-export const I2I_MULTI_QUICK_PICKS = [10, 50, 100, 200, 500] as const
+export const MAX_I2I_MULTI_COUNT = 300
 
 // 文件夹批量图生图：接受的图片扩展名（小写）
-// 用户图片文件名规范：`阿拉伯数字 + 扩展名`，如 1.png / 23.jpg
+// 文件名不限数字（任意合法图片名均可），按名称自然排序（数字感知，
+// 与 Windows 资源管理器默认排序一致）后取前 N 张
 export const I2I_MULTI_IMAGE_EXTS = ['png', 'jpg', 'jpeg'] as const
-export const I2I_MULTI_FILENAME_PATTERN = /^(\d+)\.(png|jpg|jpeg)$/i
 
 // ---------- 标题生成 ----------
 

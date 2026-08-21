@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from backend.app.crud.generation_tasks import (
     find_existing_batch_ids,
     get_failed_tasks_by_batch,
     get_task_by_id,
+    get_tasks_by_batch,
     parse_batch_id_seq,
     reset_task_for_regenerate,
     update_task_status,
@@ -27,6 +28,7 @@ from backend.app.schemas import (
     BatchGenerateRequest,
     I2iMultiCreateRequest,
     ProductSwapRequest,
+    RelayConfig,
 )
 from backend.app.toapis_client import client
 
@@ -99,10 +101,73 @@ class BatchGeneratorService:
 
         await create_generation_tasks(db, tasks)
 
+        # 自动接力套图：裂变批次全部结束后，后台协程自动用其图片创建套图批次
+        if request.relay:
+            asyncio.create_task(self._relay_watch(batch_id, request.relay))
+
         # 后台异步提交到 ToAPIs，不阻塞前端响应
         asyncio.create_task(self._submit_to_toapis(batch_id, tasks, request))
 
         return batch_id, len(tasks)
+
+    # 自动接力监控参数：轮询间隔 5 秒；总等待上限 1 小时
+    _RELAY_POLL_INTERVAL = 5
+    _RELAY_MAX_WAIT = timedelta(hours=1)
+
+    async def _relay_watch(
+        self, batch_id: str, relay: RelayConfig
+    ) -> None:
+        """监控裂变批次直至全部任务终态，然后用已完成图片自动创建套图批次。
+
+        - 每 5 秒查一次本地状态（状态由后台轮询器 / 用户查看时同步）
+        - 全部终态（completed / failed）后：收集 completed 的 image_url，
+          失败任务跳过；无任何成功图片则不接力
+        - 只触发一次；后续重试 / 重新生成产生的新图不重复接力（可用手动接力补）
+        - 1 小时超时兜底：避免任务因异常永远 pending 导致协程死循环
+          （后端进程重启会丢失本协程，属可接受限制）
+        """
+        from backend.app.database import AsyncSessionLocal
+
+        deadline = datetime.now(timezone.utc) + self._RELAY_MAX_WAIT
+        while datetime.now(timezone.utc) < deadline:
+            async with AsyncSessionLocal() as session:
+                tasks = await get_tasks_by_batch(session, batch_id)
+            if tasks and all(
+                t.status in ("completed", "failed") for t in tasks
+            ):
+                break
+            await asyncio.sleep(self._RELAY_POLL_INTERVAL)
+        else:
+            print(f"[AutoRelay] 批次 {batch_id} 等待超时，放弃自动接力")
+            return
+
+        urls = [
+            t.image_url
+            for t in tasks
+            if t.status == "completed" and t.image_url
+        ]
+        if not urls:
+            print(f"[AutoRelay] 批次 {batch_id} 无已完成图片，跳过自动接力")
+            return
+
+        try:
+            async with AsyncSessionLocal() as session:
+                request = I2iMultiCreateRequest(
+                    group_id=relay.group_id,
+                    image_urls=urls,
+                    prefix=relay.prefix,
+                    size=relay.size,
+                    resolution=relay.resolution,
+                    model=relay.model,
+                    quality=relay.quality,
+                )
+                await self.create_i2i_multi(session, request)
+            print(
+                f"[AutoRelay] 批次 {batch_id} 自动接力完成："
+                f"{len(urls)} 张图片 → 套图批次（前缀 {relay.prefix}）"
+            )
+        except Exception as exc:
+            print(f"[AutoRelay] 批次 {batch_id} 自动接力失败: {exc}")
 
     async def _generate_batch_id(self, db: AsyncSession, prefix: str) -> str:
         """生成 batch_id，格式 `{prefix}{MMDD}{seq}`。

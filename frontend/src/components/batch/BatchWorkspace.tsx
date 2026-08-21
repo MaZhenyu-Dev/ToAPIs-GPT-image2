@@ -11,7 +11,6 @@ import {
   DEFAULT_IMAGE_QUALITY,
   DEFAULT_RESOLUTION,
   DEFAULT_SIZE,
-  I2I_MULTI_QUICK_PICKS,
   IMAGE_MODEL_OPTIONS,
   IMAGE_QUALITY_OPTIONS,
   MAX_I2I_MULTI_COUNT,
@@ -23,6 +22,7 @@ import { useBatchPrefix } from '../../hooks/useBatchPrefix'
 import { useFolderBatch } from '../../hooks/useFolderBatch'
 import { PREVIEW_MAX_ROWS } from '../../hooks/useFolderBatch'
 import type {
+  AutoRelayConfig,
   BatchStatusResponse,
   BatchSummary,
   GenerationTaskItem,
@@ -40,6 +40,7 @@ import SegmentedControl from '../ui/SegmentedControl'
 import { useToast } from '../ui/Toast'
 import BatchDetailPanel from './BatchDetailPanel'
 import BatchListPanel from './BatchListPanel'
+import AutoRelayDialog from './AutoRelayDialog'
 import { displayBatchId } from '../../lib/batchDownloads'
 
 const POLL_INTERVAL_MS = 3000
@@ -68,6 +69,9 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
   const [resolution, setResolution] = useState(DEFAULT_RESOLUTION)
   const [referenceUrls, setReferenceUrls] = useState<string[]>([])
   const [submitting, setSubmitting] = useState(false)
+  // 自动接力套图配置（非空 = 已启用；裂变批次完成后自动创建套图批次）
+  const [relayConfig, setRelayConfig] = useState<AutoRelayConfig | null>(null)
+  const [relayDialogOpen, setRelayDialogOpen] = useState(false)
   // 生图模型 + 精度（默认 gpt-image-2；quality 仅部分模型支持）
   const [imageModel, setImageModel] = useState<ImageModelId>(DEFAULT_IMAGE_MODEL)
   const [quality, setQuality] = useState<ImageQuality>(DEFAULT_IMAGE_QUALITY)
@@ -105,6 +109,9 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
   // ---------- 文件夹批量（独立 hook，状态随模式切换保留） ----------
   const selectedGroup = groups.find((g) => g.id === groupId) ?? null
   const K = selectedGroup?.variant_count ?? 0
+  const relayGroupName = relayConfig
+    ? (groups.find((g) => g.id === relayConfig.group_id)?.name ?? null)
+    : null
 
   const selectedModel = IMAGE_MODEL_OPTIONS.find((m) => m.id === imageModel)
   const qualitySupported = selectedModel?.qualitySupported ?? false
@@ -162,6 +169,7 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
         prefix,
         model: imageModel,
         quality: qualitySupported ? quality : undefined,
+        relay: relayConfig ?? undefined,
       })
       const status = await fetchOnce(response.batch_id)
       if (status) {
@@ -409,7 +417,7 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
                     ? `上传图片中 ${folder.progress.uploaded}/${folder.progress.totalToUpload}…`
                     : folder.progress?.phase === 'creating'
                       ? '创建批次中…'
-                      : `开始创建 ${folder.rangeMatched.length} 个批次`}
+                      : `开始创建 ${folder.selectedImages.length} 个批次`}
               </GlassButton>
             </div>
           </div>
@@ -479,6 +487,47 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
             )}
           </div>
 
+          {/* 变体组模式：自动接力套图 */}
+          {mode === 'variant' && (
+            <div className="config-bar" style={{ marginTop: 'var(--space-4)' }}>
+              <label
+                className="auto-relay-toggle"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  cursor: 'pointer',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={relayConfig !== null}
+                  onChange={(e) => {
+                    if (e.target.checked) setRelayDialogOpen(true)
+                    else setRelayConfig(null)
+                  }}
+                />
+                <span>生成完成后自动接力套图</span>
+              </label>
+              {relayConfig && (
+                <span
+                  className="config-meta"
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                >
+                  裂变完成后自动用其图片创建套图批次
+                  （{relayGroupName ?? '变体组'} · {relayConfig.prefix} 前缀）
+                  <GlassButton
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setRelayDialogOpen(true)}
+                  >
+                    修改
+                  </GlassButton>
+                </span>
+              )}
+            </div>
+          )}
+
           {/* 变体组模式：图生图参考图 */}
           {mode === 'variant' && genMode === 'i2i' && (
             <div style={{ marginTop: 'var(--space-4)' }}>
@@ -516,6 +565,7 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
           refreshKey={listRefreshKey}
           onOpenBatch={(batchId) => void handleLoadBatch(batchId)}
           onDataChanged={handleDataChanged}
+          groups={groups}
         />
       )}
 
@@ -525,6 +575,22 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
         onConfirm={(m, q) => void handleRegenerateConfirm(m, q)}
         onClose={() => setRegenerateTarget(null)}
       />
+
+      {/* 自动接力套图：配置弹窗 */}
+      {relayDialogOpen && (
+        <AutoRelayDialog
+          initial={relayConfig}
+          groups={groups}
+          onConfirm={(config) => {
+            setRelayConfig(config)
+            setRelayDialogOpen(false)
+            toast.success(
+              `已启用自动接力：完成后用 ${config.prefix} 前缀创建套图批次`
+            )
+          }}
+          onClose={() => setRelayDialogOpen(false)}
+        />
+      )}
     </div>
   )
 }
@@ -538,56 +604,44 @@ function FolderModeSection({
   folder: ReturnType<typeof useFolderBatch>
   variantCount: number
 }) {
-  const { rangeMatched, missingSeqs, nextSeq, count } = folder
   const running =
     folder.progress?.phase === 'uploading' || folder.progress?.phase === 'creating'
+  const { selectedImages, scannedCount } = folder
+  // 数量输入合法判定：空 = 全部；否则 1-300
+  const limitValid =
+    folder.limit === '' ||
+    (Number.isInteger(Number(folder.limit)) &&
+      Number(folder.limit) >= MIN_I2I_MULTI_COUNT &&
+      Number(folder.limit) <= MAX_I2I_MULTI_COUNT)
+  const truncated = scannedCount > MAX_I2I_MULTI_COUNT
 
   return (
     <div style={{ marginTop: 'var(--space-4)' }}>
       <div className="config-bar">
         <div className="config-field config-field--grow">
-          <label>批量数量（每张图 → 1 个批次）</label>
+          <label htmlFor="folder-limit">图片数量（每张图 → 1 个批次）</label>
           <div className="config-row">
-            {I2I_MULTI_QUICK_PICKS.map((n) => (
-              <button
-                key={n}
-                type="button"
-                className={
-                  folder.count === n && folder.customCount === ''
-                    ? 'quick-chip quick-chip--active'
-                    : 'quick-chip'
-                }
-                onClick={() => folder.setCount(n)}
-                disabled={running}
-              >
-                {n}
-              </button>
-            ))}
             <input
-              type="number"
-              min={MIN_I2I_MULTI_COUNT}
-              max={MAX_I2I_MULTI_COUNT}
-              value={folder.customCount}
-              placeholder="自定义"
-              onChange={(e) => {
-                folder.setCustomCount(e.target.value)
-                const n = parseInt(e.target.value, 10)
-                if (
-                  Number.isFinite(n) &&
-                  n >= MIN_I2I_MULTI_COUNT &&
-                  n <= MAX_I2I_MULTI_COUNT
-                ) {
-                  folder.setCount(n)
-                }
+              id="folder-limit"
+              type="text"
+              inputMode="numeric"
+              value={folder.limit}
+              placeholder="不填默认全部"
+              onChange={(e) => folder.setLimit(e.target.value)}
+              style={{
+                width: '120px',
+                ...(limitValid ? undefined : { borderColor: 'var(--danger)' }),
               }}
-              style={{ width: '88px' }}
-              aria-label="自定义批量数量"
+              aria-label="图片数量（不填默认全部）"
               disabled={running}
             />
-            <span className="config-meta">
-              {MIN_I2I_MULTI_COUNT}-{MAX_I2I_MULTI_COUNT}
-            </span>
+            <span className="config-meta">最多 {MAX_I2I_MULTI_COUNT} 张</span>
           </div>
+          {!limitValid && (
+            <div className="hint" style={{ color: 'var(--danger)' }}>
+              数量需为 1-{MAX_I2I_MULTI_COUNT} 的整数，留空则使用全部
+            </div>
+          )}
         </div>
 
         <div className="config-field config-field--grow">
@@ -606,9 +660,10 @@ function FolderModeSection({
                   : '选择图片文件夹'}
             </GlassButton>
             {folder.dirHandle && (
-              <span className="config-meta" title="文件名需为数字.png/jpg/jpeg">
-                {folder.dirHandle.name}（{folder.scannedCount} 张有效
-                {folder.ignoredCount > 0 ? `，跳过 ${folder.ignoredCount} 个` : ''}）
+              <span className="config-meta" title="支持 png/jpg/jpeg，按名称自然排序">
+                {folder.dirHandle.name}（{folder.scannedCount} 张图片
+                {folder.ignoredCount > 0 ? `，跳过 ${folder.ignoredCount} 个非图片` : ''}
+                {truncated ? `，超过上限仅使用前 ${MAX_I2I_MULTI_COUNT} 张` : ''}）
               </span>
             )}
           </div>
@@ -620,44 +675,38 @@ function FolderModeSection({
         </div>
       </div>
 
-      {/* 匹配预览 */}
-      {folder.scannedCount > 0 && nextSeq !== null && (
-        <div
-          className={
-            missingSeqs.length > 0
-              ? 'folder-match-box folder-match-box--warn'
-              : 'folder-match-box'
-          }
-          style={{ marginTop: 'var(--space-4)' }}
-        >
+      {/* 使用预览 */}
+      {folder.dirHandle && scannedCount > 0 && (
+        <div className="folder-match-box" style={{ marginTop: 'var(--space-4)' }}>
           <div>
-            将使用 <strong>{rangeMatched.length}</strong> / {count} 张图片，
-            创建 <strong>{rangeMatched.length}</strong> 个批次
+            将使用 <strong>{selectedImages.length}</strong> 张图片
+            {folder.limit !== '' && scannedCount > selectedImages.length
+              ? `（文件夹共 ${scannedCount} 张，按名称排序取前 ${selectedImages.length} 张）`
+              : `（文件夹共 ${scannedCount} 张）`}
+            ，创建 <strong>{selectedImages.length}</strong> 个批次
             （每批 {variantCount} 个任务，共约{' '}
-            <strong>{rangeMatched.length * variantCount}</strong> 个任务）
-            {missingSeqs.length > 0 && (
-              <>
-                ；缺失 {missingSeqs.length} 张：
-                {missingSeqs.length <= 5
-                  ? ` seq ${missingSeqs.join(', ')}`
-                  : ` seq ${missingSeqs.slice(0, 3).join(', ')} 等 ${missingSeqs.length} 个`}
-              </>
-            )}
+            <strong>{selectedImages.length * variantCount}</strong> 个任务）
           </div>
-          {rangeMatched.length > 0 && (
+          {selectedImages.length > 0 && (
             <details style={{ marginTop: '0.4rem' }}>
               <summary style={{ cursor: 'pointer', fontSize: '0.76rem' }}>
-                查看前 {Math.min(PREVIEW_MAX_ROWS, rangeMatched.length)} 行匹配明细
+                查看前 {Math.min(PREVIEW_MAX_ROWS, selectedImages.length)} 张图
               </summary>
               <div className="folder-match-detail">
-                {rangeMatched.slice(0, PREVIEW_MAX_ROWS).map((r) => (
-                  <span key={`${r.seq}-${r.filename}`}>
-                    seq {r.seq} · {r.filename}
-                  </span>
+                {selectedImages.slice(0, PREVIEW_MAX_ROWS).map((img) => (
+                  <span key={img.filename}>{img.filename}</span>
                 ))}
               </div>
             </details>
           )}
+        </div>
+      )}
+      {folder.dirHandle && scannedCount === 0 && (
+        <div
+          className="folder-match-box folder-match-box--warn"
+          style={{ marginTop: 'var(--space-4)' }}
+        >
+          文件夹中没有可用的图片（支持 png / jpg / jpeg）
         </div>
       )}
 

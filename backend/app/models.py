@@ -76,8 +76,8 @@ class GenerationTask(Base):
     product_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 重试次数：每次「重试失败任务 / 重新生成」+1。
-    # 用途：近期批次总览页据此区分「当天新建批次」与「跨天重试批次」，
-    # 重试过的批次聚合后置顶并按序号排，便于用户辨认。
+    # 用途：近期批次总览页据此显示「重试 ×N」徽章（列表排序完全按批次号，
+    # 重试刷新 created_at 不会让批次移动位置）。
     retried_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # 自动重试已执行次数（0-3）：任务失败后按模型阶梯自动重试
     # （gpt-image-2 → gpt-image-2-vip/medium → gemini-3.1-flash-image-preview）。

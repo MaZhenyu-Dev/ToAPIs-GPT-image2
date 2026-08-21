@@ -5,6 +5,7 @@ from backend.app.crud.generation_tasks import (
     count_batches_in_batches,
     count_today_batches,
     delete_batches,
+    get_batch_thumbnails,
     get_recent_batches,
 )
 from backend.app.database import get_db
@@ -67,6 +68,22 @@ async def create_i2i_multi(
         task_count=task_count,
         base_batch_id=base_batch_id,
     )
+
+
+@router.get("/thumbnails", response_model=dict[str, list[str]])
+async def batch_thumbnails(
+    batch_ids: list[str] = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量获取批次的已完成图片 URL（每批最多 4 张），供列表缩略图。
+
+    替代前端逐批次调 /{batch_id}/status（N 次请求 → 1 次），
+    支撑大分页（100/200/300 批次）时列表仍流畅。
+    必须在所有 /{batch_id}/... 路由之前定义，避免被解析成 batch_id。
+    """
+    if len(batch_ids) > 500:
+        raise HTTPException(status_code=400, detail="单次最多查询 500 个批次")
+    return await get_batch_thumbnails(db, batch_ids)
 
 
 @router.get("/today-count", response_model=TodayBatchCountResponse)
@@ -193,10 +210,15 @@ async def regenerate_task(
 async def list_recent_batches(
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
-    page_size: int = Query(10, ge=1, le=500, description="每页数量，最大 500"),
+    page_size: int = Query(20, ge=1, le=500, description="每页数量，最大 500"),
+    q: str | None = Query(
+        None, max_length=64, description="批次号模糊搜索（任意位置子串匹配，通配符按字面处理）"
+    ),
 ):
-    """分页获取最近的批量生成批次列表。"""
-    batches, total = await get_recent_batches(db, page=page, page_size=page_size)
+    """分页获取最近的批量生成批次列表；支持 q 全库模糊搜索。"""
+    batches, total = await get_recent_batches(
+        db, page=page, page_size=page_size, query=q
+    )
     total_pages = (total + page_size - 1) // page_size if total else 0
     return BatchListResponse(
         batches=batches,
