@@ -11,12 +11,14 @@ import {
 import {
   DEFAULT_RESOLUTION,
   DEFAULT_SIZE,
+  getModelDisplayName,
   MAX_PRODUCT_SWAP_COUNT,
   MIN_PRODUCT_SWAP_COUNT,
 } from '../constants'
 import { useBatchPolling } from '../hooks/useBatchPolling'
 import { useBatchPrefix } from '../hooks/useBatchPrefix'
 import { useOnlineStatus } from '../hooks/useOnlineStatus'
+import { triggerDownload, sizeToAspectRatio } from '../lib/batchDownloads'
 import {
   isFsAccessSupported,
   pickDirectory,
@@ -25,34 +27,40 @@ import {
 import type {
   BatchStatusResponse,
   GenerationTaskItem,
+  ImageModelId,
+  ImageQuality,
 } from '../types'
-import ImagePreview from './ImagePreview'
+import { useConfirm } from './ui/ConfirmDialog'
+import FadeInImage from './ui/FadeInImage'
+import GlassButton from './ui/GlassButton'
+import GlassCard from './ui/GlassCard'
 import ImageUploader from './ImageUploader'
+import Lightbox from './ui/Lightbox'
+import type { LightboxItem } from './ui/Lightbox'
+import PageHeader from './ui/PageHeader'
 import ParameterSelector from './ParameterSelector'
+import ProgressBar from './ui/ProgressBar'
 import ProductThumbnailList, { type ProductItem } from './ProductThumbnailList'
+import RegenerateDialog from './batch/RegenerateDialog'
+import StatCard from './ui/StatCard'
+import { useToast } from './ui/Toast'
+import { IconRefresh } from './ui/Icon'
 
 const POLL_INTERVAL_MS = 3000
 
-const statusText: Record<string, string> = {
+const STATUS_TEXT: Record<string, string> = {
   pending: '待提交',
   queued: '排队中',
-  in_progress: '生成中...',
+  in_progress: '生成中',
   completed: '已完成',
   failed: '生成失败',
 }
 
-const statusColor: Record<string, string> = {
-  pending: '#9ca3af',
-  queued: '#9ca3af',
-  in_progress: '#2563eb',
-  completed: '#16a34a',
-  failed: '#dc2626',
-}
-
 export default function ProductSwapper() {
-  // 模板图：单图，只保留第一个 URL
+  const toast = useToast()
+  const confirm = useConfirm()
+
   const [templateUrls, setTemplateUrls] = useState<string[]>([])
-  // 产品图：多图，带顺序
   const [products, setProducts] = useState<ProductItem[]>([])
 
   const [prompt, setPrompt] = useState('')
@@ -60,23 +68,15 @@ export default function ProductSwapper() {
   const [resolution, setResolution] = useState(DEFAULT_RESOLUTION)
   const { prefix, handlePrefixChange, isPrefixValid, previewBatchId } = useBatchPrefix()
 
-  // 防止「模板图 = 产品图」误操作
   const templateUrl = templateUrls[0] || ''
   const templateInProducts =
     !!templateUrl && products.some((p) => p.url === templateUrl)
 
-  // 提交流程状态
   const [batch, setBatch] = useState<BatchStatusResponse | null>(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [regeneratingTaskId, setRegeneratingTaskId] = useState<number | null>(null)
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const [previewMeta, setPreviewMeta] = useState<{
-    prompt?: string
-    productIndex?: number
-  } | null>(null)
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null)
 
-  // 导出到文件夹
   const [dirDownloading, setDirDownloading] = useState(false)
   const [dirProgress, setDirProgress] = useState<
     { done: number; total: number; current: number } | null
@@ -84,13 +84,11 @@ export default function ProductSwapper() {
 
   const isOnline = useOnlineStatus()
 
-  // 轮询 hook
   const { fetchOnce, startPolling, clearPolling } = useBatchPolling({
     intervalMs: POLL_INTERVAL_MS,
     onSuccess: (status) => setBatch(status),
   })
 
-  // ---------- 提交流程 ----------
   const canSubmit =
     isOnline &&
     !loading &&
@@ -101,15 +99,13 @@ export default function ProductSwapper() {
     isPrefixValid &&
     !templateInProducts
 
+  // ---------- 提交流程 ----------
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!canSubmit) return
 
     setLoading(true)
-    setError(null)
-    setBatch(null)
     clearPolling()
-
     try {
       const response = await generateProductSwap({
         template_image_url: templateUrl,
@@ -121,10 +117,12 @@ export default function ProductSwapper() {
       })
       const status = await fetchOnce(response.batch_id)
       if (status) {
+        setBatch(status)
         startPolling(response.batch_id)
       }
+      toast.success(`已创建批次 ${response.batch_id}，共 ${response.task_count} 个任务`)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '产品替换生成失败')
+      toast.error(err instanceof Error ? err.message : '产品替换生成失败')
     } finally {
       setLoading(false)
     }
@@ -132,31 +130,55 @@ export default function ProductSwapper() {
 
   const handleRetry = async () => {
     if (!batch) return
-    setError(null)
+    const ok = await confirm({
+      title: '重试失败任务',
+      message: `将重试该批次中 ${batch.failed} 个失败任务，确定继续吗？`,
+      confirmLabel: '开始重试',
+      tone: 'primary',
+    })
+    if (!ok) return
     try {
       const response = await retryBatch(batch.batch_id)
       const status = await fetchOnce(response.batch_id)
       if (status) {
+        setBatch(status)
         startPolling(response.batch_id)
       }
+      toast.success('已重新提交失败任务')
     } catch (err) {
-      setError(err instanceof Error ? err.message : '重试失败')
+      toast.error(err instanceof Error ? err.message : '重试失败')
     }
   }
 
-  const handleRegenerateTask = async (task: GenerationTaskItem) => {
-    if (!batch) return
-    if (!window.confirm('确定要重新生成该任务吗？当前图片将被新结果替换。')) return
-    setRegeneratingTaskId(task.id)
-    setError(null)
+  // 重新生成：先弹模型/精度选择，确认后再提交（尺寸/分辨率沿用原配置）
+  const [regenerateTarget, setRegenerateTarget] = useState<GenerationTaskItem | null>(null)
+
+  const handleRegenerateTask = (task: GenerationTaskItem) => {
+    setRegenerateTarget(task)
+  }
+
+  const handleRegenerateConfirm = async (
+    model: ImageModelId,
+    quality: ImageQuality | undefined
+  ) => {
+    if (!batch || !regenerateTarget) return
+    setRegeneratingTaskId(regenerateTarget.id)
+    setRegenerateTarget(null)
     try {
-      await regenerateTask(batch.batch_id, task.id)
+      await regenerateTask(batch.batch_id, regenerateTarget.id, {
+        model,
+        ...(quality ? { quality } : {}),
+      })
       const status = await fetchOnce(batch.batch_id)
       if (status) {
+        setBatch(status)
         startPolling(batch.batch_id)
       }
+      toast.info(
+        `已用 ${model}${quality ? `（精度 ${quality}）` : ''} 重新提交，等待生成结果`
+      )
     } catch (err) {
-      setError(err instanceof Error ? err.message : '重新生成失败')
+      toast.error(err instanceof Error ? err.message : '重新生成失败')
     } finally {
       setRegeneratingTaskId(null)
     }
@@ -164,24 +186,27 @@ export default function ProductSwapper() {
 
   const handleDeleteBatch = async () => {
     if (!batch) return
-    if (!window.confirm(`确定要删除批次 ${batch.batch_id} 及其所有任务吗？此操作不可恢复。`))
-      return
+    const ok = await confirm({
+      title: '删除批次',
+      message: `确定要删除批次 ${batch.batch_id} 及其所有任务吗？此操作不可恢复。`,
+      confirmLabel: '删除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       await deleteBatch(batch.batch_id)
       setBatch(null)
-      setError(null)
+      toast.success(`批次 ${batch.batch_id} 已删除`)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '删除失败')
+      toast.error(err instanceof Error ? err.message : '删除失败')
     }
   }
 
-  // ---------- 模板图处理（只取第一张） ----------
-  // 模板图用一个 max=1 的 ImageUploader 子集：直接读 input.files，丢弃多余张
+  // ---------- 模板图处理 ----------
   const [templateUploadError, setTemplateUploadError] = useState<string | null>(null)
   const [templateUploading, setTemplateUploading] = useState(false)
-  const templateInputRef = useRef<HTMLInputElement | null>(null)
+  const templateInputRef = useRef<HTMLInputElement>(null)
 
-  // ---------- 产品图处理（带去重 + 上限） ----------
   const handleProductsUploaded = useCallback(
     (urls: string[], _names?: string[]) => {
       setProducts((prev) => {
@@ -222,8 +247,6 @@ export default function ProductSwapper() {
   // 派生数据：按上传顺序的 N 个任务
   const productTasks: GenerationTaskItem[] = (() => {
     if (!batch) return []
-    // product_swap 模式下，每个 task 的 product_image_url 顺序就是用户上传的顺序
-    // 但后端返回的 tasks 可能是按 id 排序的；为安全起见，按 product_image_url 在 products 列表中的位置排序
     const urlToIndex = new Map(products.map((p, i) => [p.url, i]))
     return [...batch.tasks].sort((a, b) => {
       const ai = a.product_image_url ? urlToIndex.get(a.product_image_url) ?? 0 : 0
@@ -251,13 +274,13 @@ export default function ProductSwapper() {
       const content = await zip.generateAsync({ type: 'blob' })
       triggerDownload(content, `product_swap_${batch?.batch_id || 'batch'}.zip`)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '打包下载失败')
+      toast.error(err instanceof Error ? err.message : '打包下载失败')
     }
   }
 
   const handleDownloadToDir = async () => {
     if (!isFsAccessSupported()) {
-      setError('当前浏览器不支持文件夹直存，请改用 Chrome / Edge / Opera')
+      toast.warning('当前浏览器不支持文件夹直存，请改用 Chrome / Edge / Opera')
       return
     }
     if (completedTasks.length === 0) return
@@ -266,12 +289,11 @@ export default function ProductSwapper() {
       dirHandle = await pickDirectory()
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return
-      setError(err instanceof Error ? err.message : '选择目录失败')
+      toast.error(err instanceof Error ? err.message : '选择目录失败')
       return
     }
     if (!dirHandle) return
 
-    // 按产品顺序构建 items（fsDownload 内部按 index+1 命名）
     const items = completedTasks.map((t, i) => {
       const urlToIndex = products.findIndex((p) => p.url === t.product_image_url)
       return { task: t, index: urlToIndex >= 0 ? urlToIndex : i }
@@ -279,67 +301,103 @@ export default function ProductSwapper() {
 
     setDirDownloading(true)
     setDirProgress({ done: 0, total: items.length, current: 0 })
-    setError(null)
-
-    const result = await saveTasksToDirectory(
-      items,
-      dirHandle,
-      (p) => setDirProgress({ done: p.done, total: p.total, current: p.current })
-    )
-
-    setDirDownloading(false)
-    setDirProgress(null)
-
-    if (result.failed === 0) {
-      setError(`已保存 ${result.success} 张到所选目录`)
-    } else {
-      const head = result.errors.slice(0, 3).join('；')
-      setError(
-        `已保存 ${result.success}/${result.total} 张；失败 ${result.failed} 条。` +
-          (head ? ` 例：${head}` : '')
+    try {
+      const result = await saveTasksToDirectory(
+        items,
+        dirHandle,
+        (p) => setDirProgress({ done: p.done, total: p.total, current: p.current })
       )
+      if (result.failed === 0) {
+        toast.success(`已保存 ${result.success} 张到所选目录`)
+      } else {
+        const head = result.errors.slice(0, 3).join('；')
+        toast.error(
+          `已保存 ${result.success}/${result.total} 张；失败 ${result.failed} 条。` +
+            (head ? ` 例：${head}` : '')
+        )
+      }
+    } finally {
+      setDirDownloading(false)
+      setDirProgress(null)
     }
   }
 
-  // ---------- 渲染 ----------
+  // Lightbox 条目：已完成任务（label 展示模型名；sourceId 用于精确定位）
+  const lightboxItems: LightboxItem[] = productTasks
+    .map((task, displayIdx) => ({ task, displayIdx }))
+    .filter(({ task }) => task.status === 'completed' && task.image_url)
+    .map(({ task, displayIdx }) => ({
+      url: task.image_url as string,
+      alt: `产品 ${displayIdx + 1} 生成结果`,
+      sourceId: task.id,
+      meta: {
+        label: `#${displayIdx + 1} · ${getModelDisplayName(task.model, task.quality)}`,
+        prompt: task.prompt ?? undefined,
+        size,
+        resolution,
+        batchId: batch?.batch_id,
+      },
+    }))
+
+  // 精确预览：按任务 ID 定位可预览列表中的真实位置（点哪张看哪张）
+  const handlePreview = (task: GenerationTaskItem) => {
+    const idx = lightboxItems.findIndex((item) => item.sourceId === task.id)
+    if (idx >= 0) {
+      setPreviewIndex(idx)
+    } else if (task.status === 'failed') {
+      toast.warning('该任务生成失败，暂无可预览的图片')
+    } else {
+      toast.info('图片尚未生成完成，请稍候')
+    }
+  }
+
+  const overallPercent =
+    batch && batch.total > 0
+      ? Math.round((batch.completed / batch.total) * 100)
+      : 0
+
   return (
-    <div className="card">
-      <h2 style={{ marginTop: 0 }}>产品替换</h2>
-      <div className="hint" style={{ marginBottom: '1rem' }}>
-        上传 1 张电商场景模板图（待替换的产品在图中），再上传 N 张你的产品图。
-        系统会按顺序生成 N 张结果图，每张用 [模板图, 产品图] 作为参考。
-      </div>
+    <GlassCard>
+      <PageHeader
+        title="产品替换"
+        description="上传 1 张电商场景模板图，再上传 N 张你的产品图，按顺序生成 N 张结果图。"
+      />
 
       <form onSubmit={handleSubmit}>
-        {/* Section 1: 模板图 */}
+        {/* 模板图 */}
         <div className="form-group">
-          <label>
-            模板图（1 张，电商场景图）
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <label style={{ marginBottom: 0 }}>模板图（1 张，电商场景图）</label>
             {templateUrls.length > 0 && (
-              <button
+              <GlassButton
                 type="button"
+                size="sm"
+                variant="ghost"
                 onClick={() => setTemplateUrls([])}
                 disabled={loading || !!batch}
-                style={{
-                  marginLeft: '0.5rem',
-                  padding: '0.2rem 0.5rem',
-                  fontSize: '0.75rem',
-                  background: '#6b7280',
-                }}
               >
                 重新上传
-              </button>
+              </GlassButton>
             )}
-          </label>
+          </div>
           {templateUrls.length === 0 ? (
             <div
+              role="button"
+              tabIndex={0}
+              aria-label="上传模板图"
               onClick={() => !templateUploading && templateInputRef.current?.click()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  if (!templateUploading) templateInputRef.current?.click()
+                }
+              }}
               style={{
-                border: '2px dashed #d1d5db',
-                borderRadius: '8px',
+                border: '1.5px dashed var(--input-border)',
+                borderRadius: 'var(--radius-md)',
                 padding: '1.25rem',
                 textAlign: 'center',
-                background: '#f9fafb',
+                background: 'var(--input-bg)',
                 cursor: templateUploading ? 'not-allowed' : 'pointer',
                 opacity: templateUploading ? 0.6 : 1,
               }}
@@ -351,12 +409,13 @@ export default function ProductSwapper() {
                 style={{ display: 'none' }}
                 onChange={(e) => handleTemplateFile(e.target.files)}
                 disabled={templateUploading}
+                aria-label="选择模板图文件"
               />
               {templateUploading ? (
-                <div>上传中...</div>
+                <div style={{ color: 'var(--text-2)', fontSize: '0.9rem' }}>上传中...</div>
               ) : (
                 <>
-                  <div style={{ fontWeight: 500, marginBottom: '0.25rem' }}>
+                  <div style={{ fontWeight: 500, marginBottom: '0.25rem', color: 'var(--text-1)' }}>
                     点击上传模板图（仅 1 张）
                   </div>
                   <div className="hint">支持 PNG / JPG / WEBP</div>
@@ -368,17 +427,13 @@ export default function ProductSwapper() {
               <img
                 src={templateUrls[0]}
                 alt="模板图"
-                onClick={() => {
-                  setPreviewUrl(templateUrls[0])
-                  setPreviewMeta({})
-                }}
                 style={{
                   width: '120px',
                   height: '120px',
                   objectFit: 'cover',
-                  borderRadius: '8px',
-                  border: '1px solid #e5e7eb',
-                  cursor: 'pointer',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--glass-border)',
+                  boxShadow: 'var(--shadow-float)',
                 }}
               />
               <div className="hint" style={{ flex: 1, wordBreak: 'break-all' }}>
@@ -387,17 +442,15 @@ export default function ProductSwapper() {
             </div>
           )}
           {templateUploadError && (
-            <div className="error" style={{ marginTop: '0.5rem' }}>
+            <div className="hint" style={{ color: 'var(--danger)', marginTop: '0.5rem' }}>
               {templateUploadError}
             </div>
           )}
         </div>
 
-        {/* Section 2: 产品图 */}
+        {/* 产品图 */}
         <div className="form-group">
-          <label>
-            产品图（最多 {MAX_PRODUCT_SWAP_COUNT} 张）
-          </label>
+          <label>产品图（最多 {MAX_PRODUCT_SWAP_COUNT} 张）</label>
           {(!batch || (batch && batch.completed + batch.failed < batch.total)) && (
             <ImageUploader
               urls={[]}
@@ -413,13 +466,13 @@ export default function ProductSwapper() {
             />
           </div>
           {templateInProducts && (
-            <div className="error" style={{ marginTop: '0.5rem' }}>
+            <div className="hint" style={{ color: 'var(--danger)', marginTop: '0.5rem' }}>
               模板图与产品图重复，请移除产品列表中相同的图片
             </div>
           )}
         </div>
 
-        {/* Section 3: Prompt */}
+        {/* Prompt */}
         <div className="form-group">
           <label htmlFor="swap-prompt">Prompt（所有 N 张图共用）</label>
           <textarea
@@ -432,7 +485,7 @@ export default function ProductSwapper() {
           />
         </div>
 
-        {/* Section 4: 参数 + 批次前缀 */}
+        {/* 参数 + 批次前缀 */}
         <ParameterSelector
           size={size}
           resolution={resolution}
@@ -453,116 +506,91 @@ export default function ProductSwapper() {
             placeholder="MZY"
             disabled={loading}
             style={{
-              fontFamily: 'monospace',
+              fontFamily: 'var(--font-mono)',
               textTransform: 'uppercase',
-              ...(isPrefixValid ? {} : { borderColor: '#dc2626' }),
+              ...(isPrefixValid ? {} : { borderColor: 'var(--danger)' }),
             }}
             title="批次号前缀，仅支持 A-Z / 0-9，1-10 位"
           />
-          <div className="hint" style={{ marginTop: '0.25rem' }}>
-            格式：<code style={{ fontFamily: 'monospace' }}>{prefix || '???'}</code>
-            <code style={{ fontFamily: 'monospace' }}>
+          <div className="hint">
+            格式：
+            <code style={{ fontFamily: 'var(--font-mono)' }}>{prefix || '???'}</code>
+            <code style={{ fontFamily: 'var(--font-mono)' }}>
               {batch?.batch_id ? batch.batch_id.slice(prefix.length, prefix.length + 4) : '????'}
             </code>
-            <code style={{ fontFamily: 'monospace' }}>??</code>
-            （日期为服务端北京时间 · 序号由服务端分配）
+            <code style={{ fontFamily: 'var(--font-mono)' }}>??</code>
             {isPrefixValid && !batch && (
               <>
                 {' · 下个 ID 预览：'}
-                <code style={{ fontFamily: 'monospace' }}>{previewBatchId}</code>
+                <code style={{ fontFamily: 'var(--font-mono)' }}>{previewBatchId}</code>
               </>
             )}
-            {batch && (
-              <span style={{ color: '#2563eb' }}> · 当前批次：{batch.batch_id}</span>
-            )}
+            {batch && <span style={{ color: 'var(--accent)' }}> · 当前批次：{batch.batch_id}</span>}
           </div>
         </div>
 
-        <div style={{ marginTop: '1.25rem' }}>
-          <button type="submit" disabled={!canSubmit}>
-            {loading
-              ? '创建任务中...'
-              : products.length === 0
-                ? '请先上传产品图'
-                : `为 ${products.length} 个产品生成 ${products.length} 张图片`}
-          </button>
+        <div className="config-actions">
+          <GlassButton type="submit" variant="primary" loading={loading} disabled={!canSubmit}>
+            {products.length === 0
+              ? '请先上传产品图'
+              : `为 ${products.length} 个产品生成 ${products.length} 张图片`}
+          </GlassButton>
         </div>
       </form>
 
-      {error && <div className="error">{error}</div>}
-
       {/* 结果区 */}
       {batch && (
-        <div style={{ marginTop: '1.5rem' }}>
-          <h3>生成进度</h3>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-              gap: '0.75rem',
-              marginBottom: '1rem',
-            }}
-          >
-            <Stat label="总计" value={batch.total} />
-            <Stat label="已完成" value={batch.completed} color="#16a34a" />
-            <Stat label="失败" value={batch.failed} color="#dc2626" />
-            <Stat label="进行中" value={batch.in_progress} color="#2563eb" />
-            <Stat label="排队中" value={batch.queued + batch.pending} />
+        <div style={{ marginTop: 'var(--space-5)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 'var(--space-3)', marginBottom: 'var(--space-4)' }}>
+            <h3 style={{ margin: 0 }}>生成进度 · <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.9rem', color: 'var(--text-2)' }}>{batch.batch_id}</span></h3>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              {batch.failed > 0 && (
+                <GlassButton variant="warning" size="sm" onClick={handleRetry}>
+                  重试失败任务 ({batch.failed})
+                </GlassButton>
+              )}
+              {completedTasks.length > 0 && (
+                <>
+                  <GlassButton variant="secondary" size="sm" onClick={handleDownloadZip}>
+                    下载全部 (zip)
+                  </GlassButton>
+                  <GlassButton
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleDownloadToDir}
+                    disabled={dirDownloading}
+                    title={
+                      isFsAccessSupported()
+                        ? '将所有已完成图片直接保存到本地文件夹'
+                        : '当前浏览器不支持文件夹直存，请使用 Chrome / Edge / Opera'
+                    }
+                  >
+                    {dirDownloading ? `导出中 ${dirProgress?.done}/${dirProgress?.total}` : '导出到文件夹'}
+                  </GlassButton>
+                </>
+              )}
+              <GlassButton variant="danger" size="sm" onClick={handleDeleteBatch}>
+                删除批次
+              </GlassButton>
+            </div>
           </div>
 
-          <div
-            style={{
-              display: 'flex',
-              gap: '0.5rem',
-              marginBottom: '1rem',
-              flexWrap: 'wrap',
-              alignItems: 'center',
-            }}
-          >
-            {batch.failed > 0 && (
-              <button
-                type="button"
-                onClick={handleRetry}
-                style={{ background: '#f59e0b' }}
-              >
-                重试失败任务 ({batch.failed})
-              </button>
-            )}
-            {completedTasks.length > 0 && (
-              <>
-                <button type="button" onClick={handleDownloadZip}>
-                  下载全部 (zip)
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDownloadToDir}
-                  disabled={dirDownloading}
-                  title={
-                    isFsAccessSupported()
-                      ? '将所有已完成图片直接保存到本地文件夹'
-                      : '当前浏览器不支持文件夹直存，请使用 Chrome / Edge / Opera'
-                  }
-                >
-                  导出全部到文件夹
-                </button>
-              </>
-            )}
-            {dirDownloading && dirProgress && (
-              <span className="hint" style={{ fontSize: '0.8rem' }}>
-                写入中 {dirProgress.done}/{dirProgress.total}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={handleDeleteBatch}
-              style={{ background: '#dc2626', marginLeft: 'auto' }}
-            >
-              删除批次
-            </button>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))', gap: 'var(--space-2)', marginBottom: 'var(--space-4)' }}>
+            <StatCard label="总计" value={batch.total} />
+            <StatCard label="已完成" value={batch.completed} tone="success" />
+            <StatCard label="失败" value={batch.failed} tone={batch.failed > 0 ? 'danger' : 'default'} />
+            <StatCard label="进行中" value={batch.in_progress} tone={batch.in_progress > 0 ? 'accent' : 'default'} />
+            <StatCard label="排队中" value={batch.queued + batch.pending} />
+          </div>
+
+          <div style={{ marginBottom: 'var(--space-4)' }}>
+            <ProgressBar progress={overallPercent} animated={batch.in_progress > 0} />
           </div>
 
           {productTasks.length === 0 ? (
-            <div className="hint">该批次暂无任务。</div>
+            <div className="empty-state">
+              <div className="empty-state-title">该批次暂无任务</div>
+            </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               {productTasks.map((task, displayIdx) => {
@@ -574,17 +602,17 @@ export default function ProductSwapper() {
                     task={task}
                     productUrl={product?.url || task.product_image_url || ''}
                     templateUrl={templateUrl}
-                    onPreview={() => {
-                      if (task.image_url) {
-                        setPreviewUrl(task.image_url)
-                        setPreviewMeta({
-                          prompt: task.prompt ?? undefined,
-                          productIndex: displayIdx,
-                        })
-                      }
-                    }}
+                    onPreview={() => handlePreview(task)}
                     onRegenerate={() => handleRegenerateTask(task)}
                     regenerating={regeneratingTaskId === task.id}
+                    onDownload={() => {
+                      if (!task.image_url) return
+                      void downloadImageBlob(task.image_url)
+                        .then((blob) => triggerDownload(blob, `${displayIdx + 1}.png`))
+                        .catch((err) =>
+                          toast.error(err instanceof Error ? err.message : '下载失败')
+                        )
+                    }}
                   />
                 )
               })}
@@ -593,39 +621,20 @@ export default function ProductSwapper() {
         </div>
       )}
 
-      <ImagePreview
-        url={previewUrl}
-        onClose={() => {
-          setPreviewUrl(null)
-          setPreviewMeta(null)
-        }}
-        meta={
-          previewMeta
-            ? {
-                prompt: previewMeta.prompt,
-                size,
-                resolution,
-              }
-            : null
-        }
+      <Lightbox
+        open={previewIndex !== null && previewIndex >= 0}
+        items={lightboxItems}
+        initialIndex={Math.max(0, previewIndex ?? 0)}
+        onClose={() => setPreviewIndex(null)}
       />
-    </div>
-  )
-}
 
-function Stat({ label, value, color }: { label: string; value: number; color?: string }) {
-  return (
-    <div
-      style={{
-        textAlign: 'center',
-        padding: '0.5rem',
-        background: '#f9fafb',
-        borderRadius: '8px',
-      }}
-    >
-      <div style={{ fontSize: '1.25rem', fontWeight: 600, color }}>{value}</div>
-      <div className="hint">{label}</div>
-    </div>
+      {/* 重新生成：模型/精度选择弹窗 */}
+      <RegenerateDialog
+        task={regenerateTarget}
+        onConfirm={(m, q) => void handleRegenerateConfirm(m, q)}
+        onClose={() => setRegenerateTarget(null)}
+      />
+    </GlassCard>
   )
 }
 
@@ -636,6 +645,7 @@ function SwapTaskRow({
   templateUrl,
   onPreview,
   onRegenerate,
+  onDownload,
   regenerating,
 }: {
   index: number
@@ -644,193 +654,142 @@ function SwapTaskRow({
   templateUrl: string
   onPreview: () => void
   onRegenerate: () => void
+  onDownload: () => void
   regenerating: boolean
 }) {
+  const isCompleted = task.status === 'completed'
+  const isFailed = task.status === 'failed'
+  const aspect = sizeToAspectRatio(task.size)
+
   return (
     <div
+      className="swap-row"
       style={{
         display: 'grid',
-        gridTemplateColumns: '32px 80px 80px 1fr auto',
-        gap: '0.75rem',
+        gridTemplateColumns: '36px 72px 72px minmax(0, 1fr) auto',
+        gap: 'var(--space-3)',
         alignItems: 'center',
-        padding: '0.5rem',
-        border: '1px solid #e5e7eb',
-        borderRadius: '8px',
-        background: task.status === 'failed' ? '#fef2f2' : '#fff',
+        padding: '0.75rem',
+        background: isFailed ? 'var(--danger-soft)' : 'var(--glass-1-bg)',
+        border: '1px solid var(--glass-border)',
+        borderRadius: 'var(--radius-md)',
       }}
     >
       <div
         style={{
           fontSize: '0.85rem',
-          fontWeight: 600,
-          color: statusColor[task.status] || '#374151',
+          fontWeight: 650,
+          color: isFailed ? 'var(--danger)' : 'var(--text-2)',
           textAlign: 'center',
+          fontVariantNumeric: 'tabular-nums',
         }}
       >
         #{index + 1}
       </div>
-      <div style={{ textAlign: 'center' }}>
-        <div className="hint" style={{ marginBottom: '0.25rem', fontSize: '0.7rem' }}>
-          产品
-        </div>
-        {productUrl ? (
-          <img
-            src={productUrl}
-            alt={`产品 ${index + 1}`}
-            style={{
-              width: '80px',
-              height: '80px',
-              objectFit: 'cover',
-              borderRadius: '6px',
-              border: '1px solid #e5e7eb',
-            }}
-          />
-        ) : (
-          <div
-            style={{
-              width: '80px',
-              height: '80px',
-              background: '#f3f4f6',
-              borderRadius: '6px',
-            }}
-          />
-        )}
-      </div>
-      <div style={{ textAlign: 'center' }}>
-        <div className="hint" style={{ marginBottom: '0.25rem', fontSize: '0.7rem' }}>
-          模板
-        </div>
-        {templateUrl ? (
-          <img
-            src={templateUrl}
-            alt="模板"
-            style={{
-              width: '80px',
-              height: '80px',
-              objectFit: 'cover',
-              borderRadius: '6px',
-              border: '1px solid #e5e7eb',
-            }}
-          />
-        ) : (
-          <div
-            style={{
-              width: '80px',
-              height: '80px',
-              background: '#f3f4f6',
-              borderRadius: '6px',
-            }}
-          />
-        )}
-      </div>
-      <div>
-        <div className="hint" style={{ marginBottom: '0.25rem', fontSize: '0.7rem' }}>
+      <Thumb url={productUrl} label={`产品 ${index + 1}`} />
+      <Thumb url={templateUrl} label="模板" />
+      <div style={{ minWidth: 0 }}>
+        <div className="hint" style={{ marginBottom: '0.3rem', fontSize: '0.7rem' }}>
           生成结果
         </div>
         {task.image_url ? (
-          <img
-            src={task.image_url}
-            alt={`结果 ${index + 1}`}
-            onClick={onPreview}
-            style={{
-              width: '180px',
-              height: '120px',
-              objectFit: 'cover',
-              borderRadius: '6px',
-              border: '1px solid #e5e7eb',
-              cursor: 'pointer',
-            }}
-          />
+          <div style={{ width: '100%', aspectRatio: aspect }}>
+            <FadeInImage
+              src={task.image_url}
+              alt={`结果 ${index + 1}`}
+              onClick={onPreview}
+              loading="lazy"
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--glass-border)',
+                cursor: 'zoom-in',
+                background: 'var(--glass-1-bg)',
+              }}
+            />
+          </div>
         ) : (
           <div
             style={{
-              width: '180px',
-              height: '120px',
-              background: '#f3f4f6',
-              borderRadius: '6px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#9ca3af',
-              fontSize: '0.85rem',
+              width: '100%',
+              aspectRatio: aspect,
+              display: 'grid',
+              placeItems: 'center',
+              background: 'var(--glass-1-bg)',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--text-3)',
+              fontSize: '0.82rem',
+              border: '1px dashed var(--glass-border)',
             }}
           >
-            {task.status === 'failed' ? '生成失败' : '生成中...'}
+            {isFailed ? '生成失败' : `${STATUS_TEXT[task.status] ?? ''} · ${task.progress}%`}
           </div>
         )}
-        {task.status !== 'completed' && task.status !== 'failed' && (
-          <div style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '0.25rem' }}>
-            {statusText[task.status] || task.status} · {task.progress}%
-          </div>
-        )}
-        {task.status === 'failed' && task.error_msg && (
-          <div
-            style={{
-              fontSize: '0.75rem',
-              color: '#dc2626',
-              marginTop: '0.25rem',
-              maxWidth: '180px',
-            }}
-            title={task.error_msg}
-          >
-            {task.error_msg.slice(0, 50)}
-            {task.error_msg.length > 50 ? '...' : ''}
+        {isFailed && task.error_msg && (
+          <div style={{ fontSize: '0.72rem', color: 'var(--danger)', marginTop: '0.25rem' }} title={task.error_msg}>
+            {task.error_msg.slice(0, 60)}
+            {task.error_msg.length > 60 ? '...' : ''}
           </div>
         )}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-        <button
-          type="button"
-          onClick={onPreview}
-          disabled={!task.image_url}
-          style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}
-        >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+        <GlassButton size="sm" variant="secondary" onClick={onPreview} disabled={!task.image_url}>
           预览
-        </button>
-        {task.status === 'completed' && task.image_url && (
-          <button
-            type="button"
-            onClick={async () => {
-              try {
-                const blob = await downloadImageBlob(task.image_url!)
-                triggerDownload(blob, `${index + 1}.png`)
-              } catch (err) {
-                alert(err instanceof Error ? err.message : '下载失败')
-              }
-            }}
-            style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}
-          >
+        </GlassButton>
+        {isCompleted && (
+          <GlassButton size="sm" variant="secondary" onClick={onDownload} disabled={!task.image_url}>
             下载
-          </button>
+          </GlassButton>
         )}
-        {(task.status === 'completed' || task.status === 'failed') && (
-          <button
-            type="button"
+        {(isCompleted || isFailed) && (
+          <GlassButton
+            size="sm"
+            variant="ghost"
             onClick={onRegenerate}
             disabled={regenerating}
-            style={{
-              padding: '0.3rem 0.6rem',
-              fontSize: '0.8rem',
-              background: regenerating ? '#f3f4f6' : '#fff7ed',
-              color: regenerating ? '#9ca3af' : '#9a3412',
-            }}
+            icon={<IconRefresh width={12} height={12} />}
             title="使用相同 prompt 重新生成"
           >
             {regenerating ? '生成中…' : '重新生成'}
-          </button>
+          </GlassButton>
         )}
       </div>
     </div>
   )
 }
 
-function triggerDownload(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = fileName
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+function Thumb({ url, label }: { url: string; label: string }) {
+  return (
+    <div style={{ textAlign: 'center' }}>
+      <div className="hint" style={{ marginBottom: '0.25rem', fontSize: '0.7rem' }}>
+        {label}
+      </div>
+      {url ? (
+        <FadeInImage
+          src={url}
+          alt={label}
+          loading="lazy"
+          style={{
+            width: '64px',
+            height: '64px',
+            objectFit: 'cover',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--glass-border)',
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            width: '64px',
+            height: '64px',
+            background: 'var(--glass-1-bg)',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px dashed var(--glass-border)',
+          }}
+        />
+      )}
+    </div>
+  )
 }

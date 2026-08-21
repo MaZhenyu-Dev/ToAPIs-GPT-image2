@@ -28,7 +28,16 @@ import type {
   TitleModelId,
   TitleTask,
 } from '../types'
-import ImagePreview from './ImagePreview'
+import { useConfirm } from './ui/ConfirmDialog'
+import FadeInImage from './ui/FadeInImage'
+import GlassButton from './ui/GlassButton'
+import GlassCard from './ui/GlassCard'
+import Lightbox from './ui/Lightbox'
+import ProgressBar from './ui/ProgressBar'
+import Skeleton from './ui/Skeleton'
+import StatCard from './ui/StatCard'
+import { useToast } from './ui/Toast'
+import { IconAlertTriangle, IconCopy, IconRefresh, IconTrash } from './ui/Icon'
 
 // 地毯类型候选值（与后端 CARPET_TYPES 对齐，用于遍历渲染单选按钮）
 const CARPET_TYPE_OPTIONS: CarpetType[] = ['corridor', 'living_room', 'general']
@@ -58,6 +67,8 @@ interface BatchImagesCache {
 }
 
 export default function TitleGenerator() {
+  const toast = useToast()
+  const confirm = useConfirm()
   // 1. 批次选择（支持分页 + 搜索）
   const [batches, setBatches] = useState<BatchSummary[]>([])
   const [batchesTotal, setBatchesTotal] = useState<number>(0)
@@ -575,12 +586,19 @@ export default function TitleGenerator() {
 
   // 删除单条
   const handleDelete = async (task: TitleTask) => {
-    if (!window.confirm('确定删除该标题记录？')) return
+    const ok = await confirm({
+      title: '删除标题记录',
+      message: `确定删除 #${task.source_task_id ?? task.id} 的标题记录吗？`,
+      confirmLabel: '删除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       await deleteTitleTask(task.id)
       setTitleTasks((prev) => prev.filter((t) => t.id !== task.id))
+      toast.success('标题记录已删除')
     } catch (err) {
-      setError(err instanceof Error ? err.message : '删除失败')
+      toast.error(err instanceof Error ? err.message : '删除失败')
     }
   }
 
@@ -637,7 +655,7 @@ export default function TitleGenerator() {
     visibleIds.length > 0 && visibleIds.every((id) => selectedBatchIds.has(id))
 
   return (
-    <div className="card">
+    <GlassCard>
       <h2 style={{ marginTop: 0 }}>标题生成</h2>
       <div className="hint" style={{ marginBottom: '1rem' }}>
         从多个已完成批次中各取第 K 张图，调多模态模型生成电商标题。
@@ -662,22 +680,24 @@ export default function TitleGenerator() {
               当前可见 {filteredBatches.length}）
             </label>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-              <button
+              <GlassButton
                 type="button"
+                size="sm"
+                variant="ghost"
                 onClick={toggleAllVisible}
-                style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem' }}
                 disabled={filteredBatches.length === 0}
               >
                 {allVisibleSelected ? '取消全选（可见）' : '全选（可见）'}
-              </button>
-              <button
+              </GlassButton>
+              <GlassButton
                 type="button"
+                size="sm"
+                variant="ghost"
                 onClick={() => void loadBatches({ page: 1 })}
-                style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem' }}
                 disabled={batchesLoading}
               >
                 {batchesLoading ? '刷新中…' : '刷新'}
-              </button>
+              </GlassButton>
             </div>
           </div>
 
@@ -696,6 +716,7 @@ export default function TitleGenerator() {
               value={batchSearch}
               onChange={(e) => setBatchSearch(e.target.value)}
               placeholder="搜索 batch_id（子串匹配，例：MT0803）"
+              aria-label="搜索批次号"
               style={{
                 flex: '1 1 220px',
                 minWidth: '180px',
@@ -704,26 +725,28 @@ export default function TitleGenerator() {
               }}
             />
             {batchesPage < batchesTotalPages && (
-              <button
+              <GlassButton
                 type="button"
+                size="sm"
+                variant="secondary"
                 onClick={() => void loadBatches({ append: true })}
                 disabled={batchesLoading}
-                style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}
                 title={`已加载 ${batches.length}，还剩 ${batchesTotal - batches.length} 个`}
               >
                 {batchesLoading
                   ? '加载中…'
                   : `加载更多（${batchesTotal - batches.length}）`}
-              </button>
+              </GlassButton>
             )}
             {batchSearch && (
-              <button
+              <GlassButton
                 type="button"
+                size="sm"
+                variant="ghost"
                 onClick={() => setBatchSearch('')}
-                style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}
               >
                 清空搜索
-              </button>
+              </GlassButton>
             )}
           </div>
 
@@ -740,10 +763,10 @@ export default function TitleGenerator() {
               style={{
                 maxHeight: `${BATCH_LIST_MAX_HEIGHT}px`,
                 overflowY: 'auto',
-                border: '1px solid #e5e7eb',
-                borderRadius: '6px',
+                border: '1px solid var(--glass-border)',
+                borderRadius: 'var(--radius-md)',
                 padding: '0.5rem',
-                background: '#fafafa',
+                background: 'var(--glass-1-bg)',
               }}
             >
               {filteredBatches.map((b) => (
@@ -756,8 +779,10 @@ export default function TitleGenerator() {
                     padding: '0.25rem 0.5rem',
                     cursor: 'pointer',
                     fontSize: '0.85rem',
-                    borderRadius: '4px',
-                    background: selectedBatchIds.has(b.batch_id) ? '#eff6ff' : 'transparent',
+                    borderRadius: 'var(--radius-sm)',
+                    background: selectedBatchIds.has(b.batch_id)
+                      ? 'var(--accent-soft)'
+                      : 'transparent',
                   }}
                 >
                   <input
@@ -811,9 +836,9 @@ export default function TitleGenerator() {
                     maxHeight: '120px',
                     overflowY: 'auto',
                     padding: '0.4rem',
-                    background: '#f9fafb',
-                    border: '1px solid #f3f4f6',
-                    borderRadius: '6px',
+                    background: 'var(--glass-1-bg)',
+                    border: '1px solid var(--glass-border)',
+                    borderRadius: 'var(--radius-sm)',
                   }}
                 >
                   {batchImageStats.map((s) => {
@@ -827,13 +852,13 @@ export default function TitleGenerator() {
                             : `${s.batchId} 有 ${s.count} 张图`
                         }
                         style={{
-                          fontFamily: 'monospace',
+                          fontFamily: 'var(--font-mono)',
                           fontSize: '0.75rem',
                           padding: '0.15rem 0.5rem',
-                          background: insufficient ? '#fee2e2' : '#fff',
-                          color: insufficient ? '#991b1b' : '#374151',
-                          border: `1px solid ${insufficient ? '#fecaca' : '#e5e7eb'}`,
-                          borderRadius: '4px',
+                          background: insufficient ? 'var(--danger-soft)' : 'var(--glass-2-bg)',
+                          color: insufficient ? 'var(--danger)' : 'var(--text-2)',
+                          border: `1px solid ${insufficient ? 'var(--danger-soft)' : 'var(--glass-border)'}`,
+                          borderRadius: 'var(--radius-pill)',
                           whiteSpace: 'nowrap',
                         }}
                       >
@@ -845,12 +870,12 @@ export default function TitleGenerator() {
               </div>
             )}
             {insufficientBatches.length > 0 && (
-              <div className="hint" style={{ color: '#dc2626', marginTop: '0.25rem' }}>
+              <div className="hint" style={{ color: 'var(--danger)', marginTop: '0.25rem' }}>
                 ⚠ 以下批次暂无已完成图：{insufficientBatches.map((s) => s.batchId).join(', ')}
               </div>
             )}
             {partialBatches.length > 0 && (
-              <div className="hint" style={{ color: '#f59e0b', marginTop: '0.25rem' }}>
+              <div className="hint" style={{ color: 'var(--warning)', marginTop: '0.25rem' }}>
                 ⚠ 以下批次图数不足（将被跳过）：
                 {partialBatches.map((s) => `${s.batchId}(${s.count})`).join(', ')}
               </div>
@@ -921,7 +946,7 @@ export default function TitleGenerator() {
             {promptsError && (
               <span
                 className="hint"
-                style={{ marginLeft: '0.5rem', color: '#dc2626' }}
+                style={{ marginLeft: '0.5rem', color: 'var(--danger)' }}
                 title={promptsError}
               >
                 ⚠ 模板加载失败，将使用内置默认 prompt
@@ -934,9 +959,9 @@ export default function TitleGenerator() {
               gap: '0.4rem',
               flexWrap: 'wrap',
               padding: '0.4rem 0.5rem',
-              background: '#f9fafb',
-              border: '1px solid #e5e7eb',
-              borderRadius: '6px',
+              background: 'var(--glass-1-bg)',
+              border: '1px solid var(--glass-border)',
+              borderRadius: 'var(--radius-md)',
             }}
           >
             {CARPET_TYPE_OPTIONS.map((ct) => {
@@ -953,11 +978,11 @@ export default function TitleGenerator() {
                     padding: '0.3rem 0.7rem',
                     cursor: 'pointer',
                     fontSize: '0.85rem',
-                    borderRadius: '6px',
-                    border: `1px solid ${checked ? '#2563eb' : '#e5e7eb'}`,
-                    background: checked ? '#eff6ff' : '#fff',
-                    color: checked ? '#1d4ed8' : '#374151',
-                    fontWeight: checked ? 500 : 400,
+                    borderRadius: 'var(--radius-pill)',
+                    border: `1px solid ${checked ? 'var(--accent)' : 'var(--glass-border)'}`,
+                    background: checked ? 'var(--accent-soft)' : 'var(--glass-2-bg)',
+                    color: checked ? 'var(--accent-strong)' : 'var(--text-2)',
+                    fontWeight: checked ? 600 : 400,
                     transition: 'all 0.15s',
                   }}
                   title={
@@ -998,9 +1023,9 @@ export default function TitleGenerator() {
             </label>
             <span className="hint" style={{ fontSize: '0.75rem' }}>
               {systemPromptDirty ? (
-                <span style={{ color: '#d97706' }}>● 已自定义，切换地毯类型不会覆盖</span>
+                <span style={{ color: 'var(--warning)' }}>● 已自定义，切换地毯类型不会覆盖</span>
               ) : (
-                <span style={{ color: '#16a34a' }}>● 使用「{carpetLabels[carpetType] || '通用'}」内置模板</span>
+                <span style={{ color: 'var(--success)' }}>● 使用「{carpetLabels[carpetType] || '通用'}」内置模板</span>
               )}
             </span>
           </div>
@@ -1012,34 +1037,36 @@ export default function TitleGenerator() {
               setSystemPromptDirty(true)
             }}
             rows={6}
-            style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}
+            style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}
             placeholder="留空则使用当前地毯类型对应的内置 prompt"
           />
-          <button
+          <GlassButton
             type="button"
+            size="sm"
+            variant="ghost"
             onClick={handleResetSystemPrompt}
-            style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem', marginTop: '0.25rem' }}
+            style={{ marginTop: '0.25rem' }}
             title={`把 prompt 重置为「${carpetLabels[carpetType] || '通用'}」内置模板`}
           >
             恢复「{carpetLabels[carpetType] || '通用'}」默认模板
-          </button>
+          </GlassButton>
         </div>
 
         {/* ---------- 5. 提交 + 导出 ---------- */}
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-          <button
+        <div className="config-actions">
+          <GlassButton
             type="submit"
-            disabled={
-              submitting || selectedBatchIds.size === 0 || minImageCount === 0
-            }
+            variant="primary"
+            loading={submitting}
+            disabled={selectedBatchIds.size === 0 || minImageCount === 0}
           >
             {submitting ? '创建中…' : `开始生成（${selectedBatchIds.size} 条）`}
-          </button>
-          <button
+          </GlassButton>
+          <GlassButton
             type="button"
+            variant="secondary"
             onClick={() => void handleExportCsv('selected')}
             disabled={exporting || selectedBatchIds.size === 0}
-            style={{ background: '#ecfdf5', color: '#065f46', border: '1px solid #a7f3d0' }}
             title={
               selectedBatchIds.size === 0
                 ? '请先选择要导出的批次'
@@ -1047,16 +1074,16 @@ export default function TitleGenerator() {
             }
           >
             {exporting ? '导出中…' : `导出选中批次 CSV（${selectedBatchIds.size}）`}
-          </button>
-          <button
+          </GlassButton>
+          <GlassButton
             type="button"
+            variant="ghost"
             onClick={() => void handleExportCsv('all')}
             disabled={exporting}
-            style={{ background: '#fff', color: '#374151' }}
             title="导出所有已完成标题"
           >
             导出全部 CSV
-          </button>
+          </GlassButton>
         </div>
       </form>
 
@@ -1069,18 +1096,18 @@ export default function TitleGenerator() {
             style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))',
-              gap: '0.5rem',
-              marginBottom: '0.5rem',
+              gap: 'var(--space-2)',
+              marginBottom: '0.75rem',
             }}
           >
-            <Stat label="总数" value={counts.total} />
-            <Stat label="已完成" value={counts.completed} color="#16a34a" />
-            <Stat label="生成中" value={counts.running} color="#2563eb" />
-            <Stat label="失败" value={counts.failed} color="#dc2626" />
+            <StatCard label="总数" value={counts.total} />
+            <StatCard label="已完成" value={counts.completed} tone="success" />
+            <StatCard label="生成中" value={counts.running} tone="accent" />
+            <StatCard label="失败" value={counts.failed} tone={counts.failed > 0 ? 'danger' : 'default'} />
           </div>
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label>总体进度（{progressPercent}%）</label>
-            <ProgressBar progress={progressPercent} color="#2563eb" animated={counts.running > 0} />
+            <ProgressBar progress={progressPercent} animated={counts.running > 0} />
           </div>
         </div>
       )}
@@ -1091,14 +1118,17 @@ export default function TitleGenerator() {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'minmax(280px, 1fr) 80px 90px 1fr 220px',
+              gridTemplateColumns: 'minmax(280px, 1fr) 80px 90px 1fr 200px',
               gap: '0.5rem',
-              padding: '0.5rem',
-              background: '#f3f4f6',
-              borderRadius: '6px 6px 0 0',
-              fontSize: '0.8rem',
-              fontWeight: 500,
-              color: '#374151',
+              padding: '0.6rem 0.75rem',
+              background: 'var(--glass-1-bg)',
+              border: '1px solid var(--glass-border)',
+              borderBottom: 'none',
+              borderRadius: 'var(--radius-md) var(--radius-md) 0 0',
+              fontSize: '0.76rem',
+              fontWeight: 600,
+              letterSpacing: '0.04em',
+              color: 'var(--text-3)',
             }}
           >
             <div>批次 / 底图</div>
@@ -1107,17 +1137,19 @@ export default function TitleGenerator() {
             <div>标题</div>
             <div>操作</div>
           </div>
-          {titleTasks.map((t) => (
-            <TitleRow
-              key={t.id}
-              task={t}
-              onPreview={() => handlePreview(t.source_image_url)}
-              onRegenerate={() => handleRegenerate(t)}
-              onCopy={() => handleCopy(t)}
-              onDelete={() => handleDelete(t)}
-              copied={copiedId === t.id}
-            />
-          ))}
+          <div style={{ borderRadius: '0 0 var(--radius-md) var(--radius-md)', overflow: 'hidden' }}>
+            {titleTasks.map((t) => (
+              <TitleRow
+                key={t.id}
+                task={t}
+                onPreview={() => handlePreview(t.source_image_url)}
+                onRegenerate={() => handleRegenerate(t)}
+                onCopy={() => handleCopy(t)}
+                onDelete={() => handleDelete(t)}
+                copied={copiedId === t.id}
+              />
+            ))}
+          </div>
         </div>
       )}
 
@@ -1132,8 +1164,12 @@ export default function TitleGenerator() {
         />
       )}
 
-      <ImagePreview url={previewUrl} onClose={() => setPreviewUrl(null)} />
-    </div>
+      <Lightbox
+        open={!!previewUrl}
+        items={previewUrl ? [{ url: previewUrl, alt: '底图预览' }] : []}
+        onClose={() => setPreviewUrl(null)}
+      />
+    </GlassCard>
   )
 }
 
@@ -1170,50 +1206,35 @@ function ConfirmExistingDialog({
   }
 
   return (
-    <div
-      onClick={handleBackdropClick}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0, 0, 0, 0.45)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000,
-        padding: '1rem',
-      }}
-    >
+    <div className="modal-overlay" onClick={handleBackdropClick}>
       <div
-        style={{
-          background: '#fff',
-          borderRadius: '10px',
-          padding: '1.5rem',
-          maxWidth: '560px',
-          width: '100%',
-          maxHeight: '85vh',
-          display: 'flex',
-          flexDirection: 'column',
-          boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1)',
-        }}
+        className="modal"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-existing-title"
+        style={{ maxWidth: '560px' }}
       >
-        <h3 style={{ margin: '0 0 0.5rem 0', color: '#dc2626' }}>
-          ⚠ 数据库中已有标题
+        <h3 className="modal-title" id="confirm-existing-title">
+          <span className="modal-title-icon modal-title-icon--danger">
+            <IconAlertTriangle width={17} height={17} />
+          </span>
+          数据库中已有标题
         </h3>
-        <p style={{ margin: '0 0 0.75rem 0', color: '#374151' }}>
+        <div className="modal-body" style={{ marginBottom: '1rem' }}>
           本次计划生成 <strong>{plannedTotal}</strong> 条，其中{' '}
-          <strong style={{ color: '#dc2626' }}>{existing.length}</strong> 条
+          <strong style={{ color: 'var(--danger)' }}>{existing.length}</strong> 条
           （{batchCount} 个批次）已存在 completed 标题。
           {newCount > 0 && (
-            <>另有 <strong style={{ color: '#16a34a' }}>{newCount}</strong> 条将作为新条目创建。</>
+            <>另有 <strong style={{ color: 'var(--success)' }}>{newCount}</strong> 条将作为新条目创建。</>
           )}
-        </p>
+        </div>
 
         <div
           style={{
             flex: 1,
             overflowY: 'auto',
-            background: '#f9fafb',
-            border: '1px solid #e5e7eb',
+            background: 'var(--glass-1-bg)',
+            border: '1px solid var(--glass-border)',
             borderRadius: '6px',
             padding: '0.5rem 0.75rem',
             fontSize: '0.85rem',
@@ -1224,18 +1245,18 @@ function ConfirmExistingDialog({
             <div
               key={bid}
               style={{
-                borderBottom: '1px solid #e5e7eb',
+                borderBottom: '1px solid var(--glass-border)',
                 padding: '0.4rem 0',
               }}
             >
-              <div style={{ fontFamily: 'monospace', color: '#1f2937', fontWeight: 500 }}>
+              <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-1)', fontWeight: 500 }}>
                 {bid}（{list.length} 张图已有标题）
               </div>
               {list.map((t) => (
                 <div
                   key={t.id}
                   style={{
-                    color: '#6b7280',
+                    color: 'var(--text-3)',
                     marginTop: '0.2rem',
                     marginLeft: '0.5rem',
                     fontSize: '0.8rem',
@@ -1253,53 +1274,24 @@ function ConfirmExistingDialog({
           ))}
         </div>
 
-        <div
-          style={{
-            display: 'flex',
-            gap: '0.5rem',
-            justifyContent: 'flex-end',
-            flexWrap: 'wrap',
-          }}
-        >
-          <button
-            type="button"
-            onClick={onCancel}
-            style={{
-              padding: '0.5rem 0.9rem',
-              background: '#fff',
-              border: '1px solid #d1d5db',
-              color: '#374151',
-            }}
-          >
+        <div className="modal-actions" style={{ marginTop: '1rem' }}>
+          <GlassButton variant="ghost" onClick={onCancel}>
             取消
-          </button>
-          <button
-            type="button"
+          </GlassButton>
+          <GlassButton
+            variant="secondary"
             onClick={onShowExisting}
-            style={{
-              padding: '0.5rem 0.9rem',
-              background: '#ecfdf5',
-              border: '1px solid #a7f3d0',
-              color: '#065f46',
-            }}
             title="仅展示数据库中已有的标题，不发起新请求"
           >
             展示已有
-          </button>
-          <button
-            type="button"
+          </GlassButton>
+          <GlassButton
+            variant="danger"
             onClick={onOverwrite}
-            style={{
-              padding: '0.5rem 0.9rem',
-              background: '#dc2626',
-              border: '1px solid #dc2626',
-              color: '#fff',
-              fontWeight: 500,
-            }}
             title="重新生成所有计划条目，已有标题将被新生成的覆盖"
           >
             重新生成（覆盖已有）
-          </button>
+          </GlassButton>
         </div>
       </div>
     </div>
@@ -1332,13 +1324,15 @@ function TitleRow({
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: 'minmax(280px, 1fr) 80px 90px 1fr 220px',
+        gridTemplateColumns: 'minmax(280px, 1fr) 80px 90px 1fr 200px',
         gap: '0.5rem',
-        padding: '0.5rem',
-        borderBottom: '1px solid #e5e7eb',
-        background: isFailed ? '#fef2f2' : '#fff',
+        padding: '0.6rem 0.75rem',
+        background: isFailed ? 'var(--danger-soft)' : 'var(--glass-1-bg)',
+        border: '1px solid var(--glass-border)',
+        borderTop: 'none',
         alignItems: 'center',
         fontSize: '0.85rem',
+        transition: 'background var(--dur)',
       }}
     >
       {/* 批次 + 缩略图 */}
@@ -1351,9 +1345,9 @@ function TitleRow({
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              background: '#fef2f2',
-              color: '#991b1b',
-              borderRadius: '4px',
+              background: 'var(--danger-soft)',
+              color: 'var(--danger)',
+              borderRadius: 'var(--radius-sm)',
               fontSize: '0.7rem',
               flexShrink: 0,
             }}
@@ -1361,7 +1355,7 @@ function TitleRow({
             加载失败
           </div>
         ) : (
-          <img
+          <FadeInImage
             src={task.source_image_url}
             alt="底图"
             onClick={onPreview}
@@ -1370,18 +1364,22 @@ function TitleRow({
               width: '48px',
               height: '48px',
               objectFit: 'cover',
-              borderRadius: '4px',
+              borderRadius: 'var(--radius-sm)',
               cursor: 'pointer',
-              border: '1px solid #e5e7eb',
+              border: '1px solid var(--glass-border)',
               flexShrink: 0,
+              transition: 'transform var(--dur) var(--ease-glass)',
             }}
+            onMouseOver={(e) => (e.currentTarget.style.transform = 'scale(1.08)')}
+            onMouseOut={(e) => (e.currentTarget.style.transform = 'scale(1)')}
           />
         )}
         <div style={{ minWidth: 0 }}>
           <div
             style={{
-              fontFamily: 'monospace',
+              fontFamily: 'var(--font-mono)',
               fontSize: '0.8rem',
+              color: 'var(--text-1)',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -1399,18 +1397,18 @@ function TitleRow({
       </div>
 
       {/* 源任务 ID（用于追溯） */}
-      <div style={{ fontFamily: 'monospace', color: '#6b7280' }}>
+      <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>
         #{task.source_task_id ?? '-'}
       </div>
 
       {/* 模型 + 状态 */}
       <div>
-        <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{task.model}</div>
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-3)' }}>{task.model}</div>
         <div
           style={{
             fontSize: '0.75rem',
-            color: statusColor[task.status] || '#6b7280',
-            fontWeight: 500,
+            color: statusColor[task.status] || 'var(--text-3)',
+            fontWeight: 600,
           }}
         >
           {statusText[task.status] || task.status}
@@ -1419,7 +1417,12 @@ function TitleRow({
 
       {/* 标题 */}
       <div style={{ minWidth: 0 }}>
-        {isPending && <TitleSkeleton />}
+        {isPending && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+            <Skeleton width="92%" height={12} />
+            <Skeleton width="64%" height={12} />
+          </div>
+        )}
         {isCompleted && task.title && (
           <div
             style={{
@@ -1428,6 +1431,7 @@ function TitleRow({
               WebkitLineClamp: 3,
               WebkitBoxOrient: 'vertical',
               wordBreak: 'break-word',
+              color: 'var(--text-1)',
             }}
             title={task.title}
           >
@@ -1435,128 +1439,48 @@ function TitleRow({
           </div>
         )}
         {isFailed && (
-          <div style={{ color: '#dc2626', fontSize: '0.8rem' }} title={task.error_msg || ''}>
+          <div style={{ color: 'var(--danger)', fontSize: '0.8rem' }} title={task.error_msg || ''}>
             {task.error_msg || '生成失败'}
           </div>
         )}
       </div>
 
       {/* 操作 */}
-      <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
         {isCompleted && (
-          <button
-            type="button"
+          <GlassButton
+            size="sm"
+            variant="secondary"
             onClick={onCopy}
-            style={{ padding: '0.3rem 0.5rem', fontSize: '0.75rem' }}
+            icon={copied ? undefined : <IconCopy width={12} height={12} />}
             title="复制标题"
           >
             {copied ? '已复制' : '复制'}
-          </button>
+          </GlassButton>
         )}
-        <button
-          type="button"
-          onClick={onRegenerate}
-          disabled={isPending}
-          style={{
-            padding: '0.3rem 0.5rem',
-            fontSize: '0.75rem',
-            background: '#fff7ed',
-            color: isPending ? '#9ca3af' : '#9a3412',
-            border: `1px solid ${isPending ? '#e5e7eb' : '#fed7aa'}`,
-          }}
-          title="使用相同模型与 prompt 重新生成"
-        >
-          重新生成
-        </button>
-        <button
-          type="button"
+        {(isCompleted || isFailed) && (
+          <GlassButton
+            size="sm"
+            variant="ghost"
+            onClick={onRegenerate}
+            disabled={isPending}
+            icon={<IconRefresh width={12} height={12} />}
+            title="使用相同模型与 prompt 重新生成"
+          >
+            重新生成
+          </GlassButton>
+        )}
+        <GlassButton
+          size="sm"
+          variant="ghost"
           onClick={onDelete}
           disabled={isPending}
-          style={{
-            padding: '0.3rem 0.5rem',
-            fontSize: '0.75rem',
-            background: '#fee2e2',
-            color: isPending ? '#9ca3af' : '#991b1b',
-          }}
+          icon={<IconTrash width={12} height={12} />}
+          style={{ color: 'var(--danger)' }}
         >
           删除
-        </button>
+        </GlassButton>
       </div>
-    </div>
-  )
-}
-
-function TitleSkeleton() {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-      <div
-        style={{
-          height: '0.9rem',
-          background: 'linear-gradient(90deg, #e5e7eb 0%, #f3f4f6 50%, #e5e7eb 100%)',
-          backgroundSize: '200% 100%',
-          borderRadius: '4px',
-          animation: 'shimmer 1.5s infinite',
-          width: '90%',
-        }}
-      />
-      <div
-        style={{
-          height: '0.9rem',
-          background: 'linear-gradient(90deg, #e5e7eb 0%, #f3f4f6 50%, #e5e7eb 100%)',
-          backgroundSize: '200% 100%',
-          borderRadius: '4px',
-          animation: 'shimmer 1.5s infinite',
-          width: '60%',
-        }}
-      />
-    </div>
-  )
-}
-
-function ProgressBar({
-  progress,
-  color,
-  animated,
-}: {
-  progress: number
-  color: string
-  animated?: boolean
-}) {
-  return (
-    <div
-      style={{
-        height: '8px',
-        background: '#e5e7eb',
-        borderRadius: '4px',
-        overflow: 'hidden',
-      }}
-    >
-      <div
-        style={{
-          width: `${progress}%`,
-          height: '100%',
-          background: color,
-          borderRadius: '4px',
-          transition: 'width 0.4s ease-out',
-          animation: animated ? 'pulse 1.5s infinite' : undefined,
-        }}
-      />
-    </div>
-  )
-}
-
-function Stat({ label, value, color }: { label: string; value: number; color?: string }) {
-  return (
-    <div
-      style={{
-        textAlign: 'center',
-        padding: '0.5rem',
-        background: '#f9fafb',
-        borderRadius: '8px',
-      }}
-    >
-      <div style={{ fontSize: '1.25rem', fontWeight: 600, color }}>{value}</div>
-      <div className="hint">{label}</div>
     </div>
   )
 }

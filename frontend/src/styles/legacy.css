@@ -1,0 +1,68 @@
+/* ==========================================================================
+   Legacy Compatibility（旧组件兼容层）
+   Phase 1 期间存量组件（BatchGenerator / ProductSwapper / TitleGenerator /
+   VariantGroupManager / ImageUploader 等）仍使用这些类名与内联样式。
+   此文件负责让它们在液态玻璃主题下表现一致；
+   Phase 3/4 组件重构完成后逐步移除，新组件一律使用 glass.css 的基元类。
+   ========================================================================== */
+
+.card {
+  background: var(--glass-2-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  box-shadow: var(--glass-highlight), var(--shadow-float);
+  margin-bottom: 1.5rem;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: var(--text-3);
+  margin-top: 0.25rem;
+}
+
+.error {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid rgba(221, 127, 114, 0.25);
+  padding: 0.75rem;
+  border-radius: var(--radius-sm);
+  margin-top: 1rem;
+  /* 允许多行汇总（用 \n 拼接）按行展示 */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 存量组件引用的关键帧动画，名称必须保持不变 */
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}

@@ -1,0 +1,120 @@
+/* ==========================================================================
+   Design Tokens（设计令牌）
+   液态玻璃工作台 · 深色（默认）/ 浅色 双主题
+   --------------------------------------------------------------------------
+   配色原则（v2，规避 AIGC 味）：
+   - 弃用「AI 默认」的靛蓝→青色渐变与彩色光斑
+   - 深色基调为暖石墨（近中性，不偏蓝紫），强调色为黄铜（贴合纺织/地毯行业
+     的工艺与暖色气质），全部状态色降饱和（低纯度、近似莫兰迪）
+   - 表面高光仅用「顶部 1px 镜面线」勾勒边缘，阴影克制
+   - 所有颜色、圆角、间距、阴影、动效统一收敛于此，禁止组件内散落硬编码值
+   ========================================================================== */
+
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* ---- 环境背景：影棚灯光 + 噪点（见 layout.css）---- */
+  --bg-base: #0f1115;
+
+  /* ---- 玻璃面（层级 1 最透 → 3 最实）---- */
+  --glass-1-bg: rgba(255, 255, 255, 0.04);
+  --glass-2-bg: rgba(255, 255, 255, 0.06);
+  --glass-3-bg: rgba(24, 26, 31, 0.82);
+  --glass-blur: blur(16px) saturate(130%);
+  --glass-blur-strong: blur(24px) saturate(140%);
+  --glass-border: rgba(255, 255, 255, 0.09);
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+
+  /* ---- 文字：暖纸白 ---- */
+  --text-1: rgba(244, 242, 237, 0.96);
+  --text-2: rgba(181, 177, 168, 0.92);
+  --text-3: rgba(131, 128, 121, 0.92);
+
+  /* ---- 语义色：黄铜强调 + 降饱和状态色 ---- */
+  --accent: #c9a35c;
+  --accent-strong: #d8b572;
+  --accent-soft: rgba(201, 163, 92, 0.14);
+  --success: #8fbf8c;
+  --success-soft: rgba(143, 191, 140, 0.12);
+  --danger: #dd7f72;
+  --danger-soft: rgba(221, 127, 114, 0.12);
+  --warning: #cfaa5e;
+  --warning-soft: rgba(207, 170, 94, 0.12);
+
+  /* ---- 表单 ---- */
+  --input-bg: rgba(255, 255, 255, 0.04);
+  --input-border: rgba(255, 255, 255, 0.12);
+
+  /* ---- 圆角 ---- */
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  /* ---- 间距（4px 基准）---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* ---- 阴影（克制）---- */
+  --shadow-float: 0 6px 24px rgba(0, 0, 0, 0.38);
+  --shadow-lift: 0 14px 40px rgba(0, 0, 0, 0.5);
+
+  /* ---- 字体 ---- */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Microsoft YaHei', 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Consolas,
+    'Courier New', monospace;
+
+  /* ---- 动效 ---- */
+  --ease-glass: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur: 0.28s;
+
+  /* ---- Lightbox 饰件（固定深色面，不随主题切换） ----
+     图片查看器惯例：遮罩与饰件永远深色，浅色主题下也保持深底浅字，
+     否则浅色主题会变成「深字配深底」不可读 */
+  --lightbox-bg: rgba(12, 14, 18, 0.82);
+  --lightbox-border: rgba(255, 255, 255, 0.12);
+  --lightbox-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  --lightbox-text-1: rgba(244, 242, 237, 0.96);
+  --lightbox-text-2: rgba(181, 177, 168, 0.92);
+  --lightbox-text-3: rgba(131, 128, 121, 0.92);
+  --lightbox-accent: #d8b572;
+  --lightbox-danger: #e0857a;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg-base: #e8e6e1;
+
+  --glass-1-bg: rgba(255, 255, 255, 0.48);
+  --glass-2-bg: rgba(255, 255, 255, 0.56);
+  --glass-3-bg: rgba(250, 249, 246, 0.9);
+  --glass-border: rgba(255, 255, 255, 0.72);
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.95);
+
+  --text-1: rgba(34, 32, 28, 0.95);
+  --text-2: rgba(86, 82, 74, 0.95);
+  --text-3: rgba(120, 115, 105, 0.95);
+
+  --accent: #9a7a2f;
+  --accent-strong: #8a6c26;
+  --accent-soft: rgba(154, 122, 47, 0.1);
+  --success: #3d7a43;
+  --success-soft: rgba(61, 122, 67, 0.1);
+  --danger: #b3482f;
+  --danger-soft: rgba(179, 72, 47, 0.09);
+  --warning: #9a6a14;
+  --warning-soft: rgba(154, 106, 20, 0.1);
+
+  --input-bg: rgba(255, 255, 255, 0.72);
+  --input-border: rgba(34, 32, 28, 0.14);
+
+  --shadow-float: 0 6px 24px rgba(34, 32, 28, 0.1);
+  --shadow-lift: 0 14px 40px rgba(34, 32, 28, 0.16);
+}

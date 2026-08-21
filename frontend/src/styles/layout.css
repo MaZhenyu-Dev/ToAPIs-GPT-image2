@@ -1,0 +1,260 @@
+/* ==========================================================================
+   Layout（应用框架）
+   环境光斑背景、侧边栏、内容区、页面头部、响应式
+   ========================================================================== */
+
+/* ---------- 环境背景：影棚灯光 + 胶片噪点 ----------
+   v2：移除彩色光斑（AIGC 味），改为：
+   - 顶部一束柔和暖光 + 右下极淡冷光（影棚布光感）
+   - 细颗粒胶片噪点，为毛玻璃提供可模糊的纹理内容
+   - 无持续动画（静止 = 克制） */
+
+.ambient {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      110% 55% at 50% -12%,
+      rgba(214, 190, 130, 0.075),
+      transparent 62%
+    ),
+    radial-gradient(
+      70% 45% at 88% 112%,
+      rgba(140, 150, 175, 0.055),
+      transparent 60%
+    );
+}
+
+.ambient-noise {
+  position: absolute;
+  inset: 0;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---------- 应用框架 ---------- */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 224px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+/* ---------- 侧边栏 ---------- */
+
+.app-sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-right: 1px solid var(--glass-border);
+  background: var(--glass-1-bg);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  backdrop-filter: var(--glass-blur-strong);
+  box-shadow: var(--glass-highlight);
+  z-index: 10;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: var(--space-1) var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.sidebar-brand-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #14120d;
+  box-shadow: 0 3px 12px rgba(201, 163, 92, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.sidebar-brand-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.sidebar-brand-sub {
+  font-size: 0.68rem;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+button.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.58rem 0.8rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-align: left;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transition: background var(--dur), color var(--dur), box-shadow var(--dur);
+}
+
+button.nav-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: transparent;
+  color: var(--text-1);
+}
+
+button.nav-item--active,
+button.nav-item--active:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--text-1);
+  border-color: transparent;
+  box-shadow: var(--glass-highlight), inset 3px 0 0 var(--accent);
+}
+
+.nav-item-icon {
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+  transition: color var(--dur);
+}
+
+button.nav-item--active .nav-item-icon,
+button.nav-item--active:hover .nav-item-icon {
+  color: var(--accent);
+}
+
+button.nav-item:hover .nav-item-icon {
+  color: var(--text-2);
+}
+
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-2) var(--space-1);
+  border-top: 1px solid var(--glass-border);
+}
+
+/* ---------- 内容区 ---------- */
+
+.app-main {
+  min-width: 0;
+  padding: var(--space-5) var(--space-6);
+}
+
+.app-main-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.page-title {
+  margin: 0;
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.page-description {
+  margin: 0.2rem 0 0;
+  font-size: 0.85rem;
+  color: var(--text-3);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+/* ---------- 响应式：窄屏侧边栏收为底部 Tab 栏 ---------- */
+
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .app-sidebar {
+    position: fixed;
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-right: none;
+    border-top: 1px solid var(--glass-border);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    z-index: 900;
+  }
+
+  .sidebar-brand {
+    display: none;
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    justify-content: space-around;
+    flex: 1;
+  }
+
+  button.nav-item {
+    justify-content: center;
+    width: auto;
+    padding: 0.5rem 0.9rem;
+  }
+
+  .nav-item-label {
+    display: none;
+  }
+
+  .sidebar-footer {
+    border-top: none;
+    padding: 0;
+  }
+
+  .sidebar-footer .badge-text {
+    display: none;
+  }
+
+  .app-main {
+    padding: var(--space-4) var(--space-4) 88px;
+  }
+}

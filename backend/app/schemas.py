@@ -21,6 +21,43 @@ SUPPORTED_SIZES = Literal[
 #   i2i_multi  - 文件夹批量图生图：N 张图各自成一个批次，每批次内 K 个任务共享该图片
 GENERATION_MODE = Literal["t2i", "i2i", "product_swap", "i2i_multi"]
 
+# 生图模型白名单（与 ToAPIs 文档对齐；前端 IMAGE_MODEL_OPTIONS 需同步）：
+# - gpt-image-2：默认模型，不支持 quality 参数
+# - gpt-image-2-vip：支持 quality（low/medium/high），分辨率在顶层
+# - gemini-3.1-flash-image-preview：ToAPIs 中转版（Nano banana 2），分辨率在
+#   metadata（大写 1K/2K/4K），不支持 quality（与 gpt-image-2 同逻辑）
+IMAGE_MODEL_ORDER = [
+    "gpt-image-2",
+    "gpt-image-2-vip",
+    "gemini-3.1-flash-image-preview",
+]
+
+IMAGE_MODEL = Literal[
+    "gpt-image-2",
+    "gpt-image-2-vip",
+    "gemini-3.1-flash-image-preview",
+]
+
+# 统一精度档位（low/medium/high）：当前仅 gpt-image-2-vip 支持（quality 参数）
+IMAGE_QUALITY = Literal["low", "medium", "high"]
+
+# 支持 quality 参数的模型（其余模型传 quality 直接校验报错，避免"选了没用上"）
+QUALITY_SUPPORTED_MODELS = {"gpt-image-2-vip"}
+
+# 自动重试模型阶梯：任务失败后依次尝试（每次失败后自动换下一个模型重新提交）
+# 第 1 次：gpt-image-2（原配置）→ 第 2 次：gpt-image-2-vip + quality=medium → 第 3 次：gemini
+# 3 次全部失败后停止，交由用户手动重试（手动重试不清零计数，避免无限循环）
+AUTO_RETRY_MODELS = [
+    "gpt-image-2",
+    "gpt-image-2-vip",
+    "gemini-3.1-flash-image-preview",
+]
+MAX_AUTO_RETRY = len(AUTO_RETRY_MODELS)
+# 各阶梯模型的精度档位（不支持的模型为 None，不传 quality）
+AUTO_RETRY_QUALITY: dict[str, Optional[str]] = {
+    "gpt-image-2-vip": "medium",
+}
+
 # product_swap 模式：产品图数量上下限，与 MAX_CONCURRENT_GENERATIONS=20 对齐
 MIN_PRODUCT_SWAP_COUNT = 1
 MAX_PRODUCT_SWAP_COUNT = 20
@@ -61,6 +98,27 @@ class SizeResolutionMixin(BaseModel):
             raise ValueError(
                 f"分辨率 '{self.resolution}' 不支持尺寸 '{self.size}'，"
                 f"可选: {list(allowed.keys())}"
+            )
+        return self
+
+
+class ModelQualityMixin(BaseModel):
+    """生图模型 + 精度档位（各批量/替换请求共用）。
+
+    - model: 白名单（见 IMAGE_MODEL），默认 gpt-image-2
+    - quality: low/medium/high；仅支持 quality 的模型允许传入，其余模型
+      传 quality 直接报错（避免"选了精度却没生效"的困惑）
+    """
+
+    model: IMAGE_MODEL = "gpt-image-2"
+    quality: Optional[IMAGE_QUALITY] = None
+
+    @model_validator(mode="after")
+    def check_quality_supported(self):
+        if self.quality is not None and self.model not in QUALITY_SUPPORTED_MODELS:
+            raise ValueError(
+                f"模型 {self.model} 不支持 quality 参数，"
+                f"仅 {sorted(QUALITY_SUPPORTED_MODELS)} 支持"
             )
         return self
 
@@ -172,11 +230,12 @@ class VariantGroupListOut(BaseModel):
 
 # ---------- 批量生成 schema ----------
 
-class BatchGenerateRequest(SizeResolutionMixin):
+class BatchGenerateRequest(SizeResolutionMixin, ModelQualityMixin):
     """批量生成请求：基于变体组创建一组生成任务。
 
     `prefix` 用于自定义批次号前缀（如 "MZY"），最终批次号格式为
     `{prefix}{MMDD}{seq}`（MMDD 取北京时间，seq 为当天该 prefix 下的序号）。
+    `model` / `quality` 来自 ModelQualityMixin（默认 gpt-image-2）。
     """
 
     group_id: int = Field(..., ge=1)
@@ -199,7 +258,7 @@ class BatchGenerateRequest(SizeResolutionMixin):
         return self
 
 
-class ProductSwapRequest(SizeResolutionMixin):
+class ProductSwapRequest(SizeResolutionMixin, ModelQualityMixin):
     """产品替换请求：上传 1 张模板图 + N 张产品图，生成 N 张结果图。
 
     每个产品对应一次 ToAPIs 请求，请求体携带 [template, product] 两张参考图，
@@ -248,6 +307,18 @@ class BatchGenerateResponse(BaseModel):
     task_count: int
 
 
+class TaskRegenerateRequest(ModelQualityMixin):
+    """任务重新生成请求：可覆盖模型与精度（尺寸/分辨率等沿用任务原配置）。
+
+    - model: 不传则沿用任务当前 model
+    - quality: 仅支持 quality 的模型允许传（ModelQualityMixin 校验）；
+      换到不支持精度的模型时服务端会清空任务 quality，避免残留导致后续 422
+    """
+
+    model: Optional[IMAGE_MODEL] = None
+    quality: Optional[IMAGE_QUALITY] = None
+
+
 class GenerationTaskOut(BaseModel):
     id: int
     batch_id: str
@@ -257,6 +328,9 @@ class GenerationTaskOut(BaseModel):
     mode: str
     size: str
     resolution: str
+    model: str = "gpt-image-2"
+    quality: Optional[str] = None
+    auto_retry_count: int = 0
     status: str
     progress: int
     image_url: Optional[str]
@@ -288,6 +362,8 @@ class BatchSummary(BaseModel):
     task_count: int
     completed_count: int
     failed_count: int = 0
+    # 批次内任务的最大重试次数（>0 表示该批次被重试过，列表置顶 + 换色）
+    retried_count: int = 0
     last_created_at: datetime
 
 
@@ -341,7 +417,7 @@ class TodayBatchCountResponse(BaseModel):
 
 # ---------- 文件夹批量图生图 schema（i2i_multi） ----------
 
-class I2iMultiCreateRequest(SizeResolutionMixin):
+class I2iMultiCreateRequest(SizeResolutionMixin, ModelQualityMixin):
     """文件夹批量图生图请求：一次创建 N 个 i2i 批次，每个批次对应一张图片。
 
     使用场景：用户从一个本地文件夹中选 N 张图片（命名规范为阿拉伯数字），

@@ -18,6 +18,74 @@ export const SIZE_OPTIONS = Object.keys(SIZE_RESOLUTION_MAP)
 export const DEFAULT_SIZE = '1:1'
 export const DEFAULT_RESOLUTION = '1k'
 
+// ---------- 生图模型 ----------
+// 与后端 schemas.py IMAGE_MODEL_ORDER / QUALITY_SUPPORTED_MODELS 对齐
+// qualitySupported: 该模型是否支持精度档位（低/中/高）
+export const IMAGE_MODEL_OPTIONS = [
+  {
+    id: 'gpt-image-2',
+    label: 'GPT-Image-2',
+    description: '默认模型 · 速度快',
+    qualitySupported: false,
+  },
+  {
+    id: 'gpt-image-2-vip',
+    label: 'GPT-Image-2 VIP',
+    description: '支持低/中/高品质档位 · 正式出图',
+    qualitySupported: true,
+  },
+  {
+    id: 'gemini-3.1-flash-image-preview',
+    label: 'Gemini 3.1 Flash Image Preview',
+    description: 'Nano banana 2 · 极端宽高比',
+    qualitySupported: false,
+  },
+] as const
+
+export const DEFAULT_IMAGE_MODEL = 'gpt-image-2'
+export const DEFAULT_IMAGE_QUALITY = 'medium'
+
+// 精度档位（低/中/高 → low/medium/high）
+export const IMAGE_QUALITY_OPTIONS = [
+  { id: 'low', label: '低' },
+  { id: 'medium', label: '中' },
+  { id: 'high', label: '高' },
+] as const
+
+// 精度档位中文标签（完整展示用）
+const QUALITY_LABELS: Record<string, string> = {
+  low: '低',
+  medium: '中',
+  high: '高',
+}
+
+/**
+ * 模型显示名：
+ * - full：完整名（Lightbox 元信息标签等完整展示场景）
+ * - short：简短名（任务卡徽章等紧凑场景）
+ * 附带精度时追加" · 精度"。
+ */
+export function getModelDisplayName(
+  model: string | null | undefined,
+  quality?: string | null,
+  variant: 'full' | 'short' = 'full'
+): string {
+  const base =
+    model === 'gpt-image-2'
+      ? 'GPT-Image-2'
+      : model === 'gpt-image-2-vip'
+        ? variant === 'short'
+          ? 'VIP'
+          : 'GPT-Image-2 VIP'
+        : model === 'gemini-3.1-flash-image-preview'
+          ? variant === 'short'
+            ? 'Gemini Preview'
+            : 'Gemini 3.1 Flash Image Preview'
+          : model || 'GPT-Image-2'
+  const q = quality ? QUALITY_LABELS[quality] ?? quality : null
+  return q ? `${base} · ${q}` : base
+}
+
 // 批次号前缀：用户可自定义，仅允许 A-Z / 0-9，1-10 位
 export const DEFAULT_BATCH_PREFIX = 'MZY'
 export const BATCH_PREFIX_PATTERN = /^[A-Z0-9]{1,10}$/

@@ -3,7 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GPT-Image-2 批量变体生成平台</title>
+    <meta name="description" content="基于 gpt-image-2 的批量图像变体生成工作台：批量生成、产品替换、标题生成" />
+    <meta name="theme-color" content="#0f1115" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>GPT-Image-2 工作台 · 批量变体生成</title>
+    <script>
+      // 首屏防闪烁：在 React 挂载前按本地偏好 / 系统偏好写入主题
+      ;(function () {
+        var KEY = 'gpt2.theme'
+        var theme = null
+        try {
+          theme = localStorage.getItem(KEY)
+        } catch (e) {
+          /* localStorage 不可用时忽略 */
+        }
+        if (theme !== 'dark' && theme !== 'light') {
+          theme =
+            typeof window.matchMedia === 'function' &&
+            window.matchMedia('(prefers-color-scheme: light)').matches
+              ? 'light'
+              : 'dark'
+        }
+        document.documentElement.dataset.theme = theme
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

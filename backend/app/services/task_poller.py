@@ -8,6 +8,7 @@ from backend.app.crud.generation_tasks import get_tasks_by_batch, update_task_st
 from backend.app.database import AsyncSessionLocal
 from backend.app.models import GenerationTask
 from backend.app.schemas import BatchStatusResponse, GenerationTaskOut
+from backend.app.services.batch_generator import batch_generator
 from backend.app.toapis_client import client
 
 
@@ -57,6 +58,8 @@ class TaskPollerService:
                             status="failed",
                             error_msg=str(exc),
                         )
+                        # 失败后自动重试（模型阶梯；3 次后停止交由用户手动重试）
+                        await batch_generator.maybe_auto_retry(session, fresh_task)
                 return
 
         new_status = status.get("status", task.status)
@@ -76,6 +79,9 @@ class TaskPollerService:
                     image_url=image_url,
                     error_msg=error_msg,
                 )
+                if new_status == "failed":
+                    # 失败后自动重试（模型阶梯；3 次后停止交由用户手动重试）
+                    await batch_generator.maybe_auto_retry(session, fresh_task)
 
     def _build_response(
         self, tasks: Sequence[GenerationTask]
@@ -100,6 +106,8 @@ class TaskPollerService:
                     mode=task.mode,
                     size=task.size,
                     resolution=task.resolution,
+                    model=task.model or "gpt-image-2",
+                    quality=task.quality,
                     status=task.status,
                     progress=task.progress,
                     image_url=task.image_url,

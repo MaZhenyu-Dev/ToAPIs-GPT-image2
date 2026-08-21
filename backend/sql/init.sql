@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS `generation_tasks` (
     `mode` VARCHAR(16) NOT NULL COMMENT '生成模式: t2i / i2i / product_swap',
     `size` VARCHAR(10) NOT NULL COMMENT '尺寸比例, 如 1:1',
     `resolution` VARCHAR(5) NOT NULL COMMENT '分辨率档位, 如 1k',
+    `model` VARCHAR(64) NOT NULL DEFAULT 'gpt-image-2'
+        COMMENT '生成模型: gpt-image-2 / gpt-image-2-vip / gemini-3.1-flash-image-preview',
+    `quality` VARCHAR(10) NULL COMMENT '精度档位 low/medium/high（gpt-image-2-vip 的 quality；gemini 官方版映射 thinkingLevel；不支持的模型为 NULL）',
     `status` VARCHAR(20) NOT NULL DEFAULT 'pending'
         COMMENT '状态: pending/queued/in_progress/completed/failed',
     `progress` TINYINT NOT NULL DEFAULT 0 COMMENT '进度 0-100',
@@ -52,6 +55,8 @@ CREATE TABLE IF NOT EXISTS `generation_tasks` (
     `template_image_url` VARCHAR(500) NULL COMMENT 'product_swap 模式: 批次级模板图 URL',
     `product_image_url` VARCHAR(500) NULL COMMENT 'product_swap 模式: 任务级产品图 URL',
     `prompt` TEXT NULL COMMENT 'product_swap 模式: 任务级 prompt（不再依赖 variant）',
+    `retried_count` INT NOT NULL DEFAULT 0 COMMENT '重试次数（重试失败任务/重新生成时+1，用于区分跨天重试批次）',
+    `auto_retry_count` INT NOT NULL DEFAULT 0 COMMENT '自动重试已执行次数（0-3，失败后按模型阶梯 gpt-image-2→vip→gemini 自动重试；3 次后停止交由用户手动重试）',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `completed_at` DATETIME NULL COMMENT '完成时间',
     INDEX `idx_generation_tasks_batch_id` (`batch_id`),

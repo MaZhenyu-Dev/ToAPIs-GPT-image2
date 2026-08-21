@@ -179,6 +179,7 @@ async def get_recent_batches(
             func.sum(
                 case((GenerationTask.status == "failed", 1), else_=0)
             ).label("failed_count"),
+            func.max(GenerationTask.retried_count).label("retried_count"),
             func.max(GenerationTask.created_at).label("last_created_at"),
         )
         .group_by(GenerationTask.batch_id)
@@ -189,7 +190,13 @@ async def get_recent_batches(
     total_result = await db.execute(select(func.count()).select_from(subq))
     total = int(total_result.scalar_one() or 0)
 
-    # 排序：先按最近创建时间倒序，再按 seq 数值倒序作为稳定 tie-breaker
+    # 排序设计：
+    # 1. 「重试过的批次」（max(retried_count) > 0）置顶，内部按 seq 数值倒序
+    #    （LENGTH DESC + 字典序 DESC = 数值倒序，见下方注释）；
+    # 2. 其余批次保持原有排序：最近创建时间倒序 + seq 数值倒序。
+    # 这样「今天重试的旧批次」整组靠前且序号连续，与当天新建批次不混排。
+    #
+    # 排序 key 说明：
     # - last_created_at DESC: 刚创建的批次排前面
     # - LENGTH(batch_id) DESC, batch_id DESC: 当一批 i2i_multi 同时创建 N 个批次时
     #   （所有任务同一次 commit，created_at 几乎一致），需要按 seq 数值倒序作为
@@ -200,6 +207,7 @@ async def get_recent_batches(
     result = await db.execute(
         select(subq)
         .order_by(
+            case((subq.c.retried_count > 0, 0), else_=1),
             subq.c.last_created_at.desc(),
             func.length(subq.c.batch_id).desc(),
             subq.c.batch_id.desc(),
@@ -216,6 +224,7 @@ async def get_recent_batches(
                 "task_count": row.task_count,
                 "completed_count": row.completed_count or 0,
                 "failed_count": row.failed_count or 0,
+                "retried_count": row.retried_count or 0,
                 "last_created_at": row.last_created_at,
             }
         )
@@ -322,6 +331,8 @@ async def reset_task_for_regenerate(
     **同时重置 created_at**：轮询器的"本地超时（5 分钟）"以 created_at 为
     计时基准，若重试/重新生成后不刷新它，第二天重试的任务会因 created_at
     是昨天的而被轮询器立刻判超时标 failed（连 ToAPIs 都不查）。
+
+    **重试计数 +1**：总览页据此识别「重试过的批次」并置顶 + 换色。
     """
     task.status = "pending"
     task.progress = 0
@@ -330,6 +341,7 @@ async def reset_task_for_regenerate(
     task.toapis_task_id = None
     task.completed_at = None
     task.created_at = datetime.now(timezone.utc)
+    task.retried_count = (task.retried_count or 0) + 1
     await db.commit()
     await db.refresh(task)
     return task

@@ -1,0 +1,758 @@
+/* ==========================================================================
+   Batch Workspace（批量工作台业务样式）
+   配置表单、批次列表卡片、任务网格、进度环、图例
+   ========================================================================== */
+
+/* ---------- 配置表单（工作流条） ----------
+   原则：控件宽度适配内容，主操作锚定右侧，提示压缩为单行 meta */
+
+.workspace-config {
+  margin-bottom: var(--space-5);
+}
+
+.config-inner {
+  max-width: 900px;
+}
+
+.config-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.config-field > label {
+  margin-bottom: 0;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+}
+
+.config-field--grow {
+  flex: 1 1 160px;
+  min-width: 160px;
+}
+
+.config-field--select {
+  flex: 0 0 104px;
+}
+
+/* 生图模型字段：独立固定宽度（select 内容较长，不能用紧凑 104px，避免溢出遮盖相邻控件） */
+.config-field--model {
+  flex: 0 0 240px;
+}
+
+.config-prefix {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.config-prefix input {
+  width: 96px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.config-prefix-next {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--accent);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.config-bar-action {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.config-bar-action .btn {
+  padding-left: 1.05rem;
+  padding-right: 1.05rem;
+}
+
+.config-meta-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--glass-border);
+  font-size: 0.76rem;
+  color: var(--text-3);
+}
+
+.config-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.config-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* 通用操作行（产品替换 / 标题生成 / 变体组等页面使用） */
+.config-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.config-meta {
+  font-size: 0.76rem;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 数量快捷档位 */
+button.quick-chip {
+  padding: 0.34rem 0.75rem;
+  font-size: 0.78rem;
+  border-radius: var(--radius-pill);
+  background: var(--glass-2-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--text-2);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+button.quick-chip:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: transparent;
+  color: var(--text-1);
+}
+
+button.quick-chip--active,
+button.quick-chip--active:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent-strong);
+}
+
+/* ---------- 批次列表 ---------- */
+
+.batch-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.batch-list-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  color: var(--text-1);
+}
+
+.batch-list-count {
+  font-size: 0.78rem;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
+.batch-search {
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: 340px;
+}
+
+/* 占满标题剩余空间：避免 fit-content 收缩导致操作按钮内部换行 */
+.batch-list-actions {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.batch-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  color: var(--text-3);
+  margin-bottom: var(--space-3);
+}
+
+/* 全选复选框：紧贴批次勾选框上方（图例行首） */
+.batch-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-2);
+  user-select: none;
+  margin-right: 0.2rem;
+  transition: color var(--dur);
+}
+
+.batch-select-all:hover:not(:has(input:disabled)) {
+  color: var(--text-1);
+}
+
+.batch-select-all input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.batch-legend-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--glass-border);
+}
+
+.batch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+/* 批次卡片 */
+.batch-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0.75rem 1rem;
+  background: var(--glass-1-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  transition: border-color var(--dur), background var(--dur), transform var(--dur) var(--ease-glass);
+  animation: item-in 0.28s var(--ease-glass);
+}
+
+.batch-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.batch-card--selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.batch-card-check {
+  flex-shrink: 0;
+}
+
+.batch-card-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.batch-card-main {
+  min-width: 200px;
+  flex: 1 1 220px;
+}
+
+.batch-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.2rem;
+}
+
+.batch-card-id {
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-1);
+  letter-spacing: 0.01em;
+}
+
+.batch-card-time {
+  font-size: 0.72rem;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-card-progress {
+  max-width: 260px;
+  margin-top: 0.35rem;
+}
+
+.batch-card-progress-text {
+  font-size: 0.7rem;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  margin-top: 0.2rem;
+}
+
+/* 缩略图带 */
+.batch-thumbs {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.batch-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-1-bg);
+  cursor: pointer;
+  transition: transform var(--dur) var(--ease-glass), border-color var(--dur);
+}
+
+.batch-thumb:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+}
+
+.batch-thumb-slot {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--glass-border);
+  display: grid;
+  place-items: center;
+  font-size: 0.62rem;
+  color: var(--text-3);
+  background: var(--glass-1-bg);
+}
+
+.batch-card-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+/* 分页 */
+.batch-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-4);
+  font-size: 0.82rem;
+  color: var(--text-3);
+}
+
+.pagination-pages {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+button.pagination-page {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+button.pagination-page:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: transparent;
+  color: var(--text-1);
+}
+
+button.pagination-page--active,
+button.pagination-page--active:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: transparent;
+}
+
+/* ---------- 批次详情 ---------- */
+
+/* 批次快速切换条 */
+.batch-switcher {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.batch-switcher-scroll {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  overflow-x: auto;
+  padding: 0.25rem 0.15rem;
+  scrollbar-width: thin;
+}
+
+button.batch-switch-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.32rem 0.7rem;
+  border-radius: var(--radius-pill);
+  background: var(--glass-1-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transition: background var(--dur), color var(--dur), border-color var(--dur);
+}
+
+button.batch-switch-chip:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: transparent;
+  color: var(--text-1);
+}
+
+button.batch-switch-chip--current,
+button.batch-switch-chip--current:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+button.batch-switch-chip--loading {
+  opacity: 0.55;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.batch-switch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.batch-switch-dot--running {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.batch-switch-fail {
+  color: var(--danger);
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.batch-switch-pct {
+  color: var(--text-3);
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+}
+
+button.batch-switcher-arrow {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--glass-1-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--text-2);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+button.batch-switcher-arrow:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: transparent;
+  color: var(--text-1);
+}
+
+.batch-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.batch-detail-title {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-width: 0;
+}
+
+.batch-detail-id {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  font-weight: 650;
+  color: var(--text-1);
+}
+
+.batch-detail-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--glass-border);
+  border-bottom: 1px solid var(--glass-border);
+  margin-bottom: var(--space-4);
+}
+
+.batch-detail-ring {
+  flex-shrink: 0;
+}
+
+.batch-detail-stats {
+  flex: 1;
+  min-width: 260px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: var(--space-2);
+}
+
+.batch-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+/* 任务网格：按批次宽高比的 contain 整图 */
+.task-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: var(--space-4);
+}
+
+.task-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--glass-1-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition: border-color var(--dur), background var(--dur), transform var(--dur) var(--ease-glass);
+  animation: item-in 0.28s var(--ease-glass);
+}
+
+.task-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.task-card--selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.task-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0.55rem 0.75rem 0;
+}
+
+.task-card-index {
+  font-size: 0.8rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+
+/* 任务模型徽章（非默认模型时显示） */
+.task-card-model {
+  font-size: 0.66rem;
+  font-weight: 600;
+  padding: 0.12rem 0.45rem;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  border: 1px solid var(--glass-border);
+  color: var(--accent-strong);
+  white-space: nowrap;
+}
+
+/* 图像区域：固定宽高比 + contain 整图，禁止裁切 */
+.task-card-media {
+  position: relative;
+  width: 100%;
+  aspect-ratio: var(--task-aspect, 1 / 1);
+  padding: var(--space-3);
+  display: grid;
+  place-items: center;
+}
+
+.task-card-image {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  border-radius: var(--radius-sm);
+  cursor: zoom-in;
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-float);
+  transition: transform var(--dur) var(--ease-glass);
+}
+
+.task-card-image:hover {
+  transform: scale(1.015);
+}
+
+.task-card-media-placeholder {
+  position: absolute;
+  inset: var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--glass-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--text-3);
+  font-size: 0.78rem;
+  background: var(--glass-1-bg);
+}
+
+.task-card-media-placeholder .progress {
+  width: 70%;
+}
+
+.task-card-prompt {
+  padding: 0 0.75rem;
+  font-size: 0.78rem;
+  color: var(--text-3);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 2.4em;
+}
+
+.task-card-error {
+  padding: 0.1rem 0.75rem;
+  font-size: 0.72rem;
+  color: var(--danger);
+  word-break: break-word;
+}
+
+.task-card-actions {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.6rem 0.75rem 0.75rem;
+  margin-top: auto;
+}
+
+.task-card-actions .btn {
+  flex: 1;
+  padding-left: 0.4rem;
+  padding-right: 0.4rem;
+  font-size: 0.78rem;
+}
+
+/* ---------- 文件夹模式匹配预览 ---------- */
+
+.folder-match-box {
+  padding: 0.75rem;
+  background: var(--glass-1-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  font-size: 0.82rem;
+  color: var(--text-2);
+}
+
+.folder-match-box--warn {
+  border-color: var(--warning-soft);
+  background: var(--warning-soft);
+}
+
+.folder-match-detail {
+  margin-top: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--text-3);
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+/* ---------- 进度环 ---------- */
+
+.progress-ring {
+  display: block;
+}
+
+.progress-ring-track {
+  stroke: var(--glass-1-bg);
+  stroke-width: 6;
+  fill: none;
+}
+
+.progress-ring-fill {
+  stroke: var(--accent);
+  stroke-width: 6;
+  fill: none;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.6s var(--ease-glass);
+}
+
+.progress-ring-fill--success {
+  stroke: var(--success);
+}
+
+.progress-ring-fill--danger {
+  stroke: var(--danger);
+}
+
+.progress-ring-label {
+  fill: var(--text-1);
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+.progress-ring-caption {
+  fill: var(--text-3);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}

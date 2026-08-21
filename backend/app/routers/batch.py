@@ -20,6 +20,7 @@ from backend.app.schemas import (
     GenerationTaskOut,
     I2iMultiCreateRequest,
     I2iMultiCreateResponse,
+    TaskRegenerateRequest,
     TodayBatchCountResponse,
 )
 from backend.app.services.batch_generator import batch_generator
@@ -145,11 +146,22 @@ async def retry_failed_batches_bulk(
 async def regenerate_task(
     batch_id: str,
     task_id: int,
+    body: TaskRegenerateRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """重新生成指定任务：复用 task_id，仅替换远端生成结果。"""
+    """重新生成指定任务：复用 task_id，仅替换远端生成结果。
+
+    可选请求体 TaskRegenerateRequest：覆盖 model / quality（前端"重新生成"弹窗）；
+    不传则沿用任务原配置。
+    """
     try:
-        task = await batch_generator.regenerate_task(db, batch_id, task_id)
+        task = await batch_generator.regenerate_task(
+            db,
+            batch_id,
+            task_id,
+            model=body.model if body else None,
+            quality=body.quality if body else None,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     # ORM 模型上无 variant_prompt 字段，需要从 variant 关系取值后手动构造响应
@@ -163,6 +175,8 @@ async def regenerate_task(
         mode=task.mode,
         size=task.size,
         resolution=task.resolution,
+        model=task.model or "gpt-image-2",
+        quality=task.quality,
         status=task.status,
         progress=task.progress,
         image_url=task.image_url,

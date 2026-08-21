@@ -1,30 +1,3 @@
-export interface GenerationRequest {
-  prompt: string
-  size: string
-  resolution: string
-  n: number
-}
-
-export interface GenerationTask {
-  id: string
-  object: string
-  model: string
-  status: 'queued' | 'in_progress' | 'completed' | 'failed'
-  progress: number
-  created_at: number
-  metadata?: Record<string, unknown>
-}
-
-export interface TaskStatus extends GenerationTask {
-  completed_at?: number
-  url?: string
-  expires_at?: number
-  error?: {
-    code?: string
-    message: string
-  }
-}
-
 // ---------- 变体组 ----------
 
 export interface Variant {
@@ -57,6 +30,15 @@ export interface VariantGroupListItem {
 
 // ---------- 批量生成 ----------
 
+// 生成模型（与后端 schemas.py IMAGE_MODEL 白名单对齐）
+export type ImageModelId =
+  | 'gpt-image-2'
+  | 'gpt-image-2-vip'
+  | 'gemini-3.1-flash-image-preview'
+
+// 精度档位（low/medium/high；仅 gpt-image-2-vip 支持）
+export type ImageQuality = 'low' | 'medium' | 'high'
+
 // 生成模式：t2i（文生图）/ i2i（图生图，批次共享 reference）/ product_swap（产品替换，每任务独立 product）
 // i2i_multi: 文件夹批量图生图，每张图一个批次，批次内 K 任务共享该图
 export type GenerationMode = 't2i' | 'i2i' | 'product_swap' | 'i2i_multi'
@@ -72,6 +54,9 @@ export interface BatchGenerateRequest {
   // 批次号前缀：1-10 位 A-Z / 0-9，默认 "MZY"
   // 最终 batch_id 格式：{prefix}{MMDD}{seq}，MMDD 为北京时间月日，seq 为当天该 prefix 下的序号
   prefix?: string
+  // 生图模型 + 精度档位（默认 gpt-image-2；quality 仅部分模型支持）
+  model?: ImageModelId
+  quality?: ImageQuality
 }
 
 // 产品替换请求：上传 1 张模板图 + N 张产品图，生成 N 张结果图
@@ -82,6 +67,8 @@ export interface ProductSwapRequest {
   size: string
   resolution: string
   prefix?: string // 默认 "MZY"
+  model?: ImageModelId
+  quality?: ImageQuality
 }
 
 export interface BatchGenerateResponse {
@@ -98,6 +85,9 @@ export interface GenerationTaskItem {
   mode: string
   size: string
   resolution: string
+  model: string
+  quality: string | null
+  auto_retry_count: number
   status: string
   progress: number
   image_url: string | null
@@ -126,6 +116,8 @@ export interface BatchSummary {
   task_count: number
   completed_count: number
   failed_count: number
+  // 批次内任务的最大重试次数（>0 表示该批次被重试过，列表置顶 + 换色）
+  retried_count: number
   last_created_at: string
 }
 
@@ -168,6 +160,8 @@ export interface I2iMultiCreateRequest {
   size: string
   resolution: string
   prefix?: string // 默认 "MZY"
+  model?: ImageModelId
+  quality?: ImageQuality
 }
 
 // i2i_multi 响应：创建成功的所有 batch_id

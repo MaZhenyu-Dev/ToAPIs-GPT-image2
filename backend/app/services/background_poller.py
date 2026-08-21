@@ -8,6 +8,7 @@ from backend.app.crud.generation_tasks import (
 )
 from backend.app.database import AsyncSessionLocal
 from backend.app.models import GenerationTask
+from backend.app.services.batch_generator import batch_generator
 from backend.app.toapis_client import client
 
 
@@ -102,6 +103,8 @@ class BackgroundPoller:
                         progress=task.progress,
                         error_msg="任务本地超时（超过 5 分钟未完成）",
                     )
+                    # 失败后自动重试（模型阶梯；3 次后停止交由用户手动重试）
+                    await batch_generator.maybe_auto_retry(session, fresh_task)
             return
 
         async with self.semaphore:
@@ -120,6 +123,8 @@ class BackgroundPoller:
                             status="failed",
                             error_msg=str(exc),
                         )
+                        # 失败后自动重试（模型阶梯；3 次后停止交由用户手动重试）
+                        await batch_generator.maybe_auto_retry(session, fresh_task)
                 return
 
         new_status = status.get("status", task.status)
@@ -145,6 +150,9 @@ class BackgroundPoller:
                     image_url=image_url,
                     error_msg=error_msg,
                 )
+                if new_status == "failed":
+                    # 失败后自动重试（模型阶梯；3 次后停止交由用户手动重试）
+                    await batch_generator.maybe_auto_retry(session, fresh_task)
 
 
 background_poller = BackgroundPoller(

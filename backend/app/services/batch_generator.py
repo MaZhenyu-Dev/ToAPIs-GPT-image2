@@ -20,6 +20,10 @@ from backend.app.crud.generation_tasks import (
 from backend.app.crud.variant_groups import get_variant_group
 from backend.app.models import GenerationTask
 from backend.app.schemas import (
+    AUTO_RETRY_MODELS,
+    AUTO_RETRY_QUALITY,
+    MAX_AUTO_RETRY,
+    QUALITY_SUPPORTED_MODELS,
     BatchGenerateRequest,
     I2iMultiCreateRequest,
     ProductSwapRequest,
@@ -47,6 +51,9 @@ class BatchGeneratorService:
         self.semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_GENERATIONS)
         # 用于序列化进程内的 batch_id 生成，避免并发读到的 count 相同
         self._id_lock = asyncio.Lock()
+        # 自动重试防重入：并发轮询（后台轮询 + 用户查看同步）同时读到 failed 时，
+        # 锁内重新读取 + 递增计数，保证同一任务只被一个协程触发重试
+        self._auto_retry_lock = asyncio.Lock()
 
     async def create_batch(
         self, db: AsyncSession, request: BatchGenerateRequest
@@ -81,6 +88,8 @@ class BatchGeneratorService:
                 mode=request.mode,
                 size=request.size,
                 resolution=request.resolution,
+                model=request.model,
+                quality=request.quality,
                 status="pending",
                 progress=0,
                 reference_image_urls=ref_urls_str,
@@ -135,6 +144,8 @@ class BatchGeneratorService:
                 mode="product_swap",
                 size=request.size,
                 resolution=request.resolution,
+                model=request.model,
+                quality=request.quality,
                 status="pending",
                 progress=0,
                 template_image_url=request.template_image_url,
@@ -156,6 +167,8 @@ class BatchGeneratorService:
             mode="product_swap",
             size=request.size,
             resolution=request.resolution,
+            model=request.model,
+            quality=request.quality,
             prefix=prefix,
         )
         asyncio.create_task(self._submit_to_toapis(batch_id, tasks, carrier))
@@ -234,6 +247,8 @@ class BatchGeneratorService:
                             mode="i2i_multi",
                             size=request.size,
                             resolution=request.resolution,
+                            model=request.model,
+                            quality=request.quality,
                             status="pending",
                             progress=0,
                             # i2i_multi 关键：把"绑定到该批次的图"写到 task 级别
@@ -254,6 +269,8 @@ class BatchGeneratorService:
             mode="i2i_multi",  # type: ignore[arg-type]
             size=request.size,
             resolution=request.resolution,
+            model=request.model,
+            quality=request.quality,
             prefix=prefix,
         )
         # 按 batch_id 分组，每个 batch 一个后台协程，信号量会在 submit_one 内限流
@@ -359,6 +376,72 @@ class BatchGeneratorService:
 
         return retried_batch_ids, retried_task_count, skipped_batch_ids
 
+    async def maybe_auto_retry(
+        self, db: AsyncSession, task: GenerationTask
+    ) -> bool:
+        """任务失败后的自动重试：按模型阶梯逐级升级换模型重新提交。
+
+        阶梯（AUTO_RETRY_MODELS，共 3 次）：
+        - 第 1 次：gpt-image-2（原配置）
+        - 第 2 次：gpt-image-2-vip + quality=medium
+        - 第 3 次：gemini-3.1-flash-image-preview
+
+        规则：
+        - auto_retry_count >= 3 不再自动重试（保留用户手动重试；手动重试不清零计数）
+        - 防重入：锁内重新读取任务，仅当仍为 failed 且未达上限才触发
+        - 重置时刷新 created_at（轮询器 5 分钟超时从本次重试重新计时）
+        - 换模型后更新 task.model/quality：任务卡徽章展示新模型，
+          后续用户手动重试也跟随最新模型
+
+        返回是否触发了重试。
+        """
+        if task.auto_retry_count >= MAX_AUTO_RETRY:
+            return False
+
+        async with self._auto_retry_lock:
+            fresh = await db.get(GenerationTask, task.id)
+            if (
+                fresh is None
+                or fresh.status != "failed"
+                or fresh.auto_retry_count >= MAX_AUTO_RETRY
+            ):
+                return False
+
+            step = fresh.auto_retry_count
+            model = AUTO_RETRY_MODELS[step]
+
+            # 重置任务状态（复用 retry 的字段重置语义）
+            fresh.status = "pending"
+            fresh.progress = 0
+            fresh.image_url = None
+            fresh.error_msg = None
+            fresh.toapis_task_id = None
+            fresh.completed_at = None
+            fresh.created_at = datetime.now(timezone.utc)
+            fresh.auto_retry_count = step + 1
+            fresh.model = model
+            fresh.quality = AUTO_RETRY_QUALITY.get(model)
+            await db.commit()
+
+        # 后台异步重新提交（fire-and-forget；信号量限流）
+        request = BatchGenerateRequest(
+            group_id=fresh.variant_id or 1,
+            mode=fresh.mode,  # type: ignore[arg-type]
+            size=fresh.size,
+            resolution=fresh.resolution,  # type: ignore[arg-type]
+            model=fresh.model or "gpt-image-2",
+            quality=fresh.quality,  # type: ignore[arg-type]
+            reference_image_urls=(
+                fresh.reference_image_urls.split(",")
+                if fresh.reference_image_urls
+                else []
+            ),
+        )
+        asyncio.create_task(
+            self._submit_to_toapis(fresh.batch_id, [fresh], request)
+        )
+        return True
+
     async def _reset_and_resubmit(
         self, db: AsyncSession, batch_id: str, failed_tasks: Sequence[GenerationTask]
     ) -> None:
@@ -376,17 +459,22 @@ class BatchGeneratorService:
             task.toapis_task_id = None
             task.completed_at = None
             task.created_at = datetime.now(timezone.utc)
+            # 重试计数 +1：近期批次总览页据此识别「重试过的批次」
+            task.retried_count = (task.retried_count or 0) + 1
         await db.commit()
 
         # 重建请求对象用于提交；group_id 仅用于 schema 校验，重试逻辑不依赖它
+        first = failed_tasks[0]
         request = BatchGenerateRequest(
-            group_id=failed_tasks[0].variant_id or 1,
-            mode=failed_tasks[0].mode,  # type: ignore[arg-type]
-            size=failed_tasks[0].size,
-            resolution=failed_tasks[0].resolution,  # type: ignore[arg-type]
+            group_id=first.variant_id or 1,
+            mode=first.mode,  # type: ignore[arg-type]
+            size=first.size,
+            resolution=first.resolution,  # type: ignore[arg-type]
+            model=first.model or "gpt-image-2",
+            quality=first.quality,  # type: ignore[arg-type]
             reference_image_urls=(
-                failed_tasks[0].reference_image_urls.split(",")
-                if failed_tasks[0].reference_image_urls
+                first.reference_image_urls.split(",")
+                if first.reference_image_urls
                 else []
             ),
         )
@@ -397,13 +485,36 @@ class BatchGeneratorService:
     def _build_payload(
         self, task: GenerationTask, request: BatchGenerateRequest
     ) -> dict:
+        """按模型构建 ToAPIs 请求体。
+
+        模型差异（对齐 ToAPIs 文档）：
+        - gpt-image-2：顶层 resolution（1k/2k/4k），无 quality
+        - gpt-image-2-vip：顶层 resolution + quality（low/medium/high）
+        - gemini-3.1-flash-image-preview：resolution 在 metadata（大写 1K/2K/4K），
+          无 quality（与 gpt-image-2 同逻辑）
+
+        task 上持久化的 model/quality 是权威（重试/重新生成时原样复用），
+        缺失时回退到 request（向后兼容旧数据）。
+        """
+        model = task.model or request.model or "gpt-image-2"
+        quality = task.quality or request.quality
+
         payload: dict = {
-            "model": "gpt-image-2",
+            "model": model,
             "size": request.size,
-            "resolution": request.resolution,
             "n": 1,
             "response_format": "url",
         }
+
+        if model == "gpt-image-2-vip":
+            payload["resolution"] = request.resolution
+            if quality:
+                payload["quality"] = quality
+        elif model == "gemini-3.1-flash-image-preview":
+            payload["metadata"] = {"resolution": request.resolution.upper()}
+        else:  # gpt-image-2 及未知模型：保持原有行为
+            payload["resolution"] = request.resolution
+
         # prompt 优先级：product_swap 模式从 task.prompt 取（避免污染 variant_groups），
         # 其他模式从 variant.prompt_content 取（向后兼容）
         if task.prompt is not None:
@@ -431,12 +542,21 @@ class BatchGeneratorService:
         return payload
 
     async def regenerate_task(
-        self, db: AsyncSession, batch_id: str, task_id: int
+        self,
+        db: AsyncSession,
+        batch_id: str,
+        task_id: int,
+        model: str | None = None,
+        quality: str | None = None,
     ) -> GenerationTask:
         """重新生成单个任务：重置状态后重新提交到 ToAPIs。
 
         复用现有任务记录（task_id 不变），仅替换远端生成结果。已结束的任务
         （completed/failed）可重新生成，进行中的任务拒绝以避免重复扣费。
+
+        model / quality：用户可在此覆盖生成模型与精度（前端"重新生成"弹窗）；
+        不传则沿用任务当前值。换到不支持精度的模型时清空 quality，
+        避免残留导致后续手动重试重建请求时被 schema 校验拒绝（422）。
         """
         task = await get_task_by_id(db, task_id)
         if task is None or task.batch_id != batch_id:
@@ -446,6 +566,16 @@ class BatchGeneratorService:
                 f"任务当前状态为 {task.status}，仅已完成/失败的任务可重新生成"
             )
 
+        # 模型覆盖 + 精度校正（防残留）
+        if model is not None:
+            task.model = model
+            if model in QUALITY_SUPPORTED_MODELS:
+                task.quality = quality or task.quality or "medium"
+            else:
+                task.quality = None
+        elif quality is not None:
+            task.quality = quality
+
         await reset_task_for_regenerate(db, task)
 
         # 重建提交参数（参考 retry_failed 写法，group_id 不参与提交逻辑）
@@ -454,6 +584,8 @@ class BatchGeneratorService:
             mode=task.mode,  # type: ignore[arg-type]
             size=task.size,
             resolution=task.resolution,  # type: ignore[arg-type]
+            model=task.model or "gpt-image-2",
+            quality=task.quality,  # type: ignore[arg-type]
             reference_image_urls=(
                 task.reference_image_urls.split(",")
                 if task.reference_image_urls

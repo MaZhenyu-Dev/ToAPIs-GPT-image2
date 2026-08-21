@@ -5,14 +5,11 @@ import type {
   BatchListResponse,
   BatchRetryResponse,
   BatchStatusResponse,
-  GenerationRequest,
-  GenerationTask,
   GenerationTaskItem,
   I2iMultiCreateRequest,
   I2iMultiCreateResponse,
   ImageUploadResponse,
   ProductSwapRequest,
-  TaskStatus,
   TitleBatchDeleteRequest,
   TitleBatchImagesResponse,
   TitleGenerateRequest,
@@ -71,17 +68,6 @@ async function fetchBlob(url: string, options?: RequestInit): Promise<Blob> {
     throw new Error(data.detail || data.message || `请求失败: ${response.status}`)
   }
   return response.blob()
-}
-
-export function createGeneration(payload: GenerationRequest): Promise<GenerationTask> {
-  return fetchJson<GenerationTask>('/api/generations/generate', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function getTaskStatus(taskId: string): Promise<TaskStatus> {
-  return fetchJson<TaskStatus>(`/api/generations/tasks/${taskId}`)
 }
 
 // ---------- 变体组 API ----------
@@ -159,11 +145,15 @@ export function retryBatch(batchId: string): Promise<BatchGenerateResponse> {
 
 export function regenerateTask(
   batchId: string,
-  taskId: number
+  taskId: number,
+  payload?: { model?: string; quality?: string }
 ): Promise<GenerationTaskItem> {
   return fetchJson<GenerationTaskItem>(
     `/api/batches/${batchId}/tasks/${taskId}/regenerate`,
-    { method: 'POST' }
+    {
+      method: 'POST',
+      body: payload ? JSON.stringify(payload) : undefined,
+    }
   )
 }
 

@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import GlassButton from './ui/GlassButton'
 
 interface Props {
   children: ReactNode
@@ -31,14 +32,14 @@ export default class ErrorBoundary extends Component<Props, State> {
         return this.props.fallback
       }
       return (
-        <div className="card" style={{ textAlign: 'center' }}>
-          <h2 style={{ color: '#dc2626', marginTop: 0 }}>页面出现错误</h2>
-          <p style={{ color: '#6b7280' }}>
+        <div className="glass glass-card-padding--lg" style={{ textAlign: 'center' }}>
+          <h2 style={{ marginTop: 0, color: 'var(--danger)' }}>页面出现错误</h2>
+          <p style={{ color: 'var(--text-2)', wordBreak: 'break-word' }}>
             {this.state.error?.message || '未知错误，请尝试刷新页面。'}
           </p>
-          <button type="button" onClick={this.handleReload}>
+          <GlassButton variant="primary" onClick={this.handleReload}>
             刷新页面
-          </button>
+          </GlassButton>
         </div>
       )
     }

@@ -7,6 +7,11 @@ import {
   listVariantGroups,
   updateVariantGroup,
 } from '../api'
+import { useConfirm } from './ui/ConfirmDialog'
+import GlassButton from './ui/GlassButton'
+import GlassCard from './ui/GlassCard'
+import { useToast } from './ui/Toast'
+import { IconTrash } from './ui/Icon'
 
 const MAX_VARIANTS = 20
 
@@ -15,35 +20,34 @@ interface Props {
   selectedGroupId?: number | null
 }
 
-export default function VariantGroupManager({
-  onSelect,
-  selectedGroupId,
-}: Props) {
+export default function VariantGroupManager({ onSelect, selectedGroupId }: Props) {
+  const toast = useToast()
+  const confirm = useConfirm()
   const [groups, setGroups] = useState<VariantGroupListItem[]>([])
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   const [editingGroup, setEditingGroup] = useState<VariantGroup | null>(null)
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [variants, setVariants] = useState<string[]>([''])
+  const [saving, setSaving] = useState(false)
 
   const loadGroups = useCallback(async () => {
     setLoading(true)
-    setError(null)
     try {
       const data = await listVariantGroups()
       setGroups(data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载变体组失败')
+      toast.error(err instanceof Error ? err.message : '加载变体组失败')
     } finally {
       setLoading(false)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    loadGroups()
+    void loadGroups()
   }, [loadGroups])
 
   const resetForm = () => {
@@ -60,7 +64,6 @@ export default function VariantGroupManager({
   }
 
   const openEditForm = async (groupId: number) => {
-    setError(null)
     try {
       const group = await getVariantGroup(groupId)
       setEditingGroup(group)
@@ -75,7 +78,7 @@ export default function VariantGroupManager({
       )
       setIsFormOpen(true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载变体组失败')
+      toast.error(err instanceof Error ? err.message : '加载变体组失败')
     }
   }
 
@@ -97,15 +100,13 @@ export default function VariantGroupManager({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const filtered = variants
-      .map((v) => v.trim())
-      .filter((v) => v.length > 0)
+    const filtered = variants.map((v) => v.trim()).filter((v) => v.length > 0)
     if (filtered.length === 0) {
-      setError('至少需要 1 个有效的 Prompt 变体')
+      toast.warning('至少需要 1 个有效的 Prompt 变体')
       return
     }
     if (filtered.length > MAX_VARIANTS) {
-      setError(`变体数量不能超过 ${MAX_VARIANTS} 个`)
+      toast.warning(`变体数量不能超过 ${MAX_VARIANTS} 个`)
       return
     }
 
@@ -118,33 +119,43 @@ export default function VariantGroupManager({
       })),
     }
 
-    setError(null)
+    setSaving(true)
     try {
       if (editingGroup) {
         await updateVariantGroup(editingGroup.id, payload)
+        toast.success('变体组已更新')
       } else {
         await createVariantGroup(payload)
+        toast.success('变体组已创建')
       }
       resetForm()
       await loadGroups()
     } catch (err) {
-      setError(err instanceof Error ? err.message : '保存失败')
+      toast.error(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
     }
   }
 
   const handleDelete = async (groupId: number) => {
-    if (!confirm('确定删除该变体组吗？')) return
-    setError(null)
+    const ok = await confirm({
+      title: '删除变体组',
+      message: '确定删除该变体组吗？组内的 Prompt 变体将一并删除。',
+      confirmLabel: '删除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       await deleteVariantGroup(groupId)
+      toast.success('变体组已删除')
       await loadGroups()
     } catch (err) {
-      setError(err instanceof Error ? err.message : '删除失败')
+      toast.error(err instanceof Error ? err.message : '删除失败')
     }
   }
 
   return (
-    <div className="card">
+    <GlassCard>
       <div
         style={{
           display: 'flex',
@@ -154,18 +165,20 @@ export default function VariantGroupManager({
         }}
       >
         <h2 style={{ margin: 0 }}>变体组管理</h2>
-        <button type="button" onClick={openCreateForm}>
+        <GlassButton variant="primary" size="sm" onClick={openCreateForm}>
           新建变体组
-        </button>
+        </GlassButton>
       </div>
 
-      {error && <div className="error">{error}</div>}
-
       {isFormOpen && (
-        <form onSubmit={handleSubmit} style={{ marginBottom: '1.5rem' }}>
+        <form
+          onSubmit={handleSubmit}
+          style={{ marginBottom: '1.5rem', padding: '1.25rem', background: 'var(--glass-1-bg)', border: '1px solid var(--glass-border)', borderRadius: 'var(--radius-md)' }}
+        >
           <div className="form-group">
-            <label>变体组名称</label>
+            <label htmlFor="group-name">变体组名称</label>
             <input
+              id="group-name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -174,8 +187,9 @@ export default function VariantGroupManager({
             />
           </div>
           <div className="form-group">
-            <label>描述（可选）</label>
+            <label htmlFor="group-desc">描述（可选）</label>
             <input
+              id="group-desc"
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -188,78 +202,77 @@ export default function VariantGroupManager({
               Prompt 变体 ({variants.length}/{MAX_VARIANTS})
             </label>
             {variants.map((value, index) => (
-              <div
-                key={index}
-                style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}
-              >
+              <div key={index} style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
                 <textarea
                   value={value}
                   onChange={(e) => handleVariantChange(index, e.target.value)}
                   placeholder={`变体 ${index + 1} 的 Prompt`}
                   style={{ minHeight: '60px', flex: 1 }}
+                  aria-label={`变体 ${index + 1}`}
                 />
-                <button
+                <GlassButton
                   type="button"
+                  variant="ghost"
+                  size="sm"
                   onClick={() => handleRemoveVariant(index)}
-                  style={{
-                    background: '#ef4444',
-                    padding: '0.4rem 0.8rem',
-                  }}
+                  icon={<IconTrash width={13} height={13} />}
                 >
                   删除
-                </button>
+                </GlassButton>
               </div>
             ))}
-            <button
+            <GlassButton
               type="button"
+              variant="secondary"
+              size="sm"
               onClick={handleAddVariant}
               disabled={variants.length >= MAX_VARIANTS}
-              style={{ background: '#10b981' }}
             >
               添加变体
-            </button>
+            </GlassButton>
           </div>
 
-          <div style={{ display: 'flex', gap: '0.75rem' }}>
-            <button type="submit">
+          <div className="config-actions" style={{ marginTop: 'var(--space-3)' }}>
+            <GlassButton type="submit" variant="primary" loading={saving}>
               {editingGroup ? '保存修改' : '创建变体组'}
-            </button>
-            <button
-              type="button"
-              onClick={resetForm}
-              style={{ background: '#6b7280' }}
-            >
+            </GlassButton>
+            <GlassButton type="button" variant="ghost" onClick={resetForm}>
               取消
-            </button>
+            </GlassButton>
           </div>
         </form>
       )}
 
       {loading ? (
-        <div>加载中...</div>
+        <div className="hint">加载中...</div>
       ) : groups.length === 0 ? (
-        <div className="hint">暂无变体组，请先创建。</div>
+        <div className="empty-state">
+          <div className="empty-state-title">暂无变体组</div>
+          <div className="empty-state-description">创建第一个变体组，即可在批量生成中使用。</div>
+        </div>
       ) : (
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
           {groups.map((group) => (
             <li
               key={group.id}
               style={{
-                padding: '0.75rem',
-                borderBottom: '1px solid #e5e7eb',
+                padding: '0.85rem 1rem',
+                marginBottom: '0.5rem',
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
                 background:
-                  selectedGroupId === group.id ? '#eff6ff' : 'transparent',
-                borderRadius: '8px',
+                  selectedGroupId === group.id ? 'var(--accent-soft)' : 'var(--glass-1-bg)',
+                border: '1px solid var(--glass-border)',
+                borderRadius: 'var(--radius-md)',
+                transition: 'background var(--dur), border-color var(--dur)',
               }}
             >
               <div
                 style={{ flex: 1, cursor: onSelect ? 'pointer' : 'default' }}
                 onClick={() => onSelect?.(group)}
               >
-                <div style={{ fontWeight: 500 }}>{group.name}</div>
+                <div style={{ fontWeight: 600, color: 'var(--text-1)' }}>{group.name}</div>
                 <div className="hint">
                   {group.variant_count} 个变体
                   {group.description ? ` · ${group.description}` : ''}
@@ -267,33 +280,27 @@ export default function VariantGroupManager({
               </div>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 {onSelect && (
-                  <button
-                    type="button"
-                    onClick={() => onSelect(group)}
-                    style={{ padding: '0.4rem 0.8rem' }}
-                  >
+                  <GlassButton size="sm" variant="secondary" onClick={() => onSelect(group)}>
                     选择
-                  </button>
+                  </GlassButton>
                 )}
-                <button
-                  type="button"
-                  onClick={() => openEditForm(group.id)}
-                  style={{ padding: '0.4rem 0.8rem', background: '#6b7280' }}
-                >
+                <GlassButton size="sm" variant="ghost" onClick={() => void openEditForm(group.id)}>
                   编辑
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDelete(group.id)}
-                  style={{ padding: '0.4rem 0.8rem', background: '#ef4444' }}
+                </GlassButton>
+                <GlassButton
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => void handleDelete(group.id)}
+                  icon={<IconTrash width={12} height={12} />}
+                  style={{ color: 'var(--danger)' }}
                 >
                   删除
-                </button>
+                </GlassButton>
               </div>
             </li>
           ))}
         </ul>
       )}
-    </div>
+    </GlassCard>
   )
 }
