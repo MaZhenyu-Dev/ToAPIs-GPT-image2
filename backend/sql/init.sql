@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS `title_tasks` (
     `source_task_id` BIGINT NULL COMMENT '底图对应的源 generation_task.id（SET NULL 保留历史）',
     `batch_id` VARCHAR(36) NOT NULL COMMENT '冗余：源任务所在批次（加速列表 / 导出 CSV）',
     `source_image_url` VARCHAR(500) NOT NULL COMMENT '冗余：底图远端 URL',
-    `model` VARCHAR(64) NOT NULL COMMENT '多模态模型：gemini-3.6-flash / grok-4.5 / gpt-5.6-sol',
+    `model` VARCHAR(64) NOT NULL COMMENT '多模态模型：gemini-3.7-flash / grok-4.5 / gpt-5.6-sol',
     `prompt_snapshot` TEXT NOT NULL COMMENT '完整 prompt 快照（system + user 引用）',
     `extra_instructions` TEXT NULL COMMENT '用户附加的额外要求（可空）',
     `max_tokens` INT NULL COMMENT '生成上限 token；NULL 走 ToAPIs 默认',

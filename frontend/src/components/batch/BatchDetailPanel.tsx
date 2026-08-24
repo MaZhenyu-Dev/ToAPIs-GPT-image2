@@ -27,11 +27,13 @@ interface BatchDetailPanelProps {
   /** 工作台级操作进行中（重试/删除），禁用面板内交互 */
   busy: boolean
   regeneratingTaskId: number | null
-  /** 批次快速切换条数据（最近批次摘要） */
+  /** 批次快速切换条数据（最近批次摘要 / 搜索匹配结果） */
   recentBatches: BatchSummary[]
   /** 正在切换中的批次号（chip 显示加载态） */
   switchingBatchId: string | null
   onSwitchBatch: (batchId: string) => void
+  /** 切换条搜索（全库模糊查询；空串恢复最近批次） */
+  onSearchSwitchBatches: (q: string) => void
   onBack: () => void
   onRetryFailed: () => Promise<void>
   onRegenerateTask: (task: GenerationTaskItem) => void
@@ -49,6 +51,7 @@ export default function BatchDetailPanel({
   recentBatches,
   switchingBatchId,
   onSwitchBatch,
+  onSearchSwitchBatches,
   onBack,
   onRetryFailed,
   onRegenerateTask,
@@ -230,6 +233,26 @@ export default function BatchDetailPanel({
   const chipRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
   const switching = switchingBatchId !== null
 
+  // 切换条搜索：防抖后全库模糊查询（空串恢复最近批次）
+  const [switchSearch, setSwitchSearch] = useState('')
+  const switchSearchTimer = useRef<number | null>(null)
+  const handleSwitchSearch = (value: string) => {
+    setSwitchSearch(value)
+    if (switchSearchTimer.current !== null) {
+      window.clearTimeout(switchSearchTimer.current)
+    }
+    switchSearchTimer.current = window.setTimeout(() => {
+      onSearchSwitchBatches(value.trim())
+    }, 300)
+  }
+  useEffect(() => {
+    return () => {
+      if (switchSearchTimer.current !== null) {
+        window.clearTimeout(switchSearchTimer.current)
+      }
+    }
+  }, [])
+
   // 当前批次变化时自动滚动 chip 到可视区
   useEffect(() => {
     const el = chipRefs.current.get(batch.batch_id)
@@ -251,6 +274,21 @@ export default function BatchDetailPanel({
 
   return (
     <div className="panel-in" style={{ ['--task-aspect' as string]: aspect }}>
+      {/* 批次快速切换：搜索 + chip 条（搜索支持全库模糊查询，任意批次可切换） */}
+      <div className="batch-switcher-search">
+        <input
+          type="search"
+          value={switchSearch}
+          onChange={(e) => handleSwitchSearch(e.target.value)}
+          placeholder="搜索批次号切换（全库）"
+          aria-label="搜索批次号切换"
+        />
+        {switchSearch.trim() !== '' && (
+          <span className="config-meta">
+            {recentBatches.length > 0 ? `匹配 ${recentBatches.length} 条` : '无匹配批次'}
+          </span>
+        )}
+      </div>
       {/* 批次快速切换条 */}
       {recentBatches.length > 0 && (
         <div className="batch-switcher">

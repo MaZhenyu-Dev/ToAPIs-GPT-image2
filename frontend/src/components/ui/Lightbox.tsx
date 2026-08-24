@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   IconArrowLeft,
   IconArrowRight,
@@ -230,7 +231,9 @@ export default function Lightbox({
   const meta = current.meta
   const canNavigate = items.length > 1
 
-  return (
+  // Portal 挂到 body：祖先容器的 backdrop-filter / transform 会破坏 fixed
+  // 定位（成为 containing block），导致遮罩只覆盖容器区域而非全屏
+  return createPortal(
     <div
       className={
         chromeHidden
@@ -423,6 +426,7 @@ export default function Lightbox({
           )}
         </div>
       )}
-    </div>
+    </div>,
+    document.body
   )
 }

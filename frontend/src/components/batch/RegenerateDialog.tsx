@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   DEFAULT_IMAGE_QUALITY,
   IMAGE_MODEL_OPTIONS,
@@ -50,7 +51,9 @@ export default function RegenerateDialog({
     if (e.target === e.currentTarget) onClose()
   }
 
-  return (
+  // Portal 挂到 body：祖先容器的 backdrop-filter / transform 会破坏 fixed
+  // 定位（成为 containing block），导致遮罩只覆盖容器区域而非全屏
+  return createPortal(
     <div className="modal-overlay" onClick={handleBackdropClick}>
       <div
         className="modal"
@@ -117,6 +120,7 @@ export default function RegenerateDialog({
           </GlassButton>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="GPT-Image-2 批量变体生成平台",
+    title="图灵 · 批量变体生成平台",
     version="0.3.0",
     lifespan=lifespan,
 )

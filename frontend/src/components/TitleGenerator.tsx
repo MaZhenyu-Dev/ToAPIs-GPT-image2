@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   deleteTitleTask,
   exportTitlesCsv,
@@ -85,7 +86,7 @@ export default function TitleGenerator() {
   const [imageIndex, setImageIndex] = useState<number>(1)
 
   // 3. 模型 / 参数
-  const [model, setModel] = useState<TitleModelId>('gemini-3.6-flash')
+  const [model, setModel] = useState<TitleModelId>('gemini-3.7-flash')
   const [systemPrompt, setSystemPrompt] = useState<string>(
     () => localStorage.getItem(TITLE_PROMPT_STORAGE_KEY) || DEFAULT_CARPET_TITLE_SYSTEM_PROMPT
   )
@@ -1205,7 +1206,9 @@ function ConfirmExistingDialog({
     if (e.target === e.currentTarget) onCancel()
   }
 
-  return (
+  // Portal 挂到 body：祖先容器的 backdrop-filter / transform 会破坏 fixed
+  // 定位（成为 containing block），导致遮罩只覆盖容器区域而非全屏
+  return createPortal(
     <div className="modal-overlay" onClick={handleBackdropClick}>
       <div
         className="modal"
@@ -1294,7 +1297,8 @@ function ConfirmExistingDialog({
           </GlassButton>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 

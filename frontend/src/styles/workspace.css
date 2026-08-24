@@ -399,6 +399,29 @@ button.pagination-page--active:hover:not(:disabled) {
 
 /* ---------- 批次详情 ---------- */
 
+/* 批次快速切换：搜索行（全库模糊查询，支持超过 50 条 / 更早的批次） */
+.batch-switcher-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.batch-switcher-search input[type="search"] {
+  width: 240px;
+  padding: 0.35rem 0.7rem;
+  border-radius: var(--radius-pill);
+  background: var(--glass-1-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--text-1);
+  font-size: 0.8rem;
+}
+
+.batch-switcher-search input[type="search"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* 批次快速切换条 */
 .batch-switcher {
   display: flex;

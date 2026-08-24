@@ -191,7 +191,7 @@ export interface ImageUploadResponse {
 
 // 支持的多模态模型 ID（与后端白名单对齐，顺序同失败重试切换顺序）
 export type TitleModelId =
-  | 'gemini-3.6-flash'
+  | 'gemini-3.7-flash'
   | 'gpt-5.6-terra'
   | 'gpt-5.4-mini'
   | 'claude-haiku-4-5'

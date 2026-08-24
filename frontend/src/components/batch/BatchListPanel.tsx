@@ -12,7 +12,11 @@ import { exportBatchesToDirectory } from '../../lib/fsDownload'
 import type { BatchExportProgress } from '../../lib/fsDownload'
 import { isFsAccessSupported, pickDirectory } from '../../lib/fsDownload'
 import { useBatchThumbnails } from '../../hooks/useBatchThumbnails'
-import { MAX_I2I_MULTI_COUNT } from '../../constants'
+import {
+  BATCH_LIST_SESSION_KEY,
+  BATCH_PAGE_SIZE_STORAGE_KEY,
+  MAX_I2I_MULTI_COUNT,
+} from '../../constants'
 import type {
   BatchListResponse,
   BatchSummary,
@@ -66,11 +70,13 @@ export default function BatchListPanel({
 
   const [batches, setBatches] = useState<BatchSummary[]>([])
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState<number>(20)
+  // 分页大小跨会话持久化（localStorage）；页码/搜索词会话内恢复（sessionStorage）：
+  // 点开批次详情时组件卸载，返回重挂载时保持"刚才的位置"
+  const [page, setPageState] = useState<number>(loadSessionPage)
+  const [pageSize, setPageSizeState] = useState<number>(loadStoredPageSize)
   const [totalPages, setTotalPages] = useState(0)
   const [loading, setLoading] = useState(false)
-  const [search, setSearch] = useState('')
+  const [search, setSearchState] = useState<string>(loadSessionSearch)
   const [selectedBatches, setSelectedBatches] = useState<Set<string>>(new Set())
   const [deleting, setDeleting] = useState(false)
   const [retrying, setRetrying] = useState(false)
@@ -84,6 +90,20 @@ export default function BatchListPanel({
   const requestSeq = useRef(0)
   const searchRef = useRef('')
   const searchTimer = useRef<number | null>(null)
+
+  // setter 包装：state 变化时同步写回存储
+  const setPage = useCallback((n: number) => {
+    setPageState(n)
+    persistSession({ page: n })
+  }, [])
+  const setPageSize = useCallback((n: number) => {
+    setPageSizeState(n)
+    persistPageSize(n)
+  }, [])
+  const setSearch = useCallback((v: string) => {
+    setSearchState(v)
+    persistSession({ search: v })
+  }, [])
 
   useEffect(() => {
     mounted.current = true
@@ -152,9 +172,17 @@ export default function BatchListPanel({
     }
   }, [])
 
-  // 初次挂载 / 外部刷新键变化时加载第 1 页
+  // 初次挂载 / 外部刷新键变化时加载列表：恢复会话中的页码与搜索词，
+  // 数据加载完成后恢复滚动位置（点开批次返回时保持"刚才的位置"）
   useEffect(() => {
-    void loadPage(1, pageSize)
+    searchRef.current = search
+    void loadPage(page, pageSize, false, search || undefined).then(() => {
+      const y = readSession().scrollY
+      if (y > 0) {
+        // 等一帧让列表渲染完成，避免图片/骨架屏挤压导致位置偏移
+        requestAnimationFrame(() => window.scrollTo(0, y))
+      }
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey])
 
@@ -623,7 +651,11 @@ export default function BatchListPanel({
               selected={selectedBatches.has(batch.batch_id)}
               thumbs={thumbnails.thumbnails[batch.batch_id] ?? []}
               onToggle={() => toggleBatch(batch.batch_id)}
-              onOpen={() => onOpenBatch(batch.batch_id)}
+              onOpen={() => {
+                // 记录滚动位置，返回时恢复（配合 page/search 的会话持久化）
+                persistSession({ scrollY: window.scrollY })
+                onOpenBatch(batch.batch_id)
+              }}
               onDelete={() => void handleDeleteOne(batch.batch_id)}
               deleting={deleting}
             />
@@ -830,4 +862,66 @@ function SelectAllCheckbox({
       全选
     </label>
   )
+}
+
+// ---------- 列表状态持久化 ----------
+
+interface ListSessionState {
+  page: number
+  search: string
+  scrollY: number
+}
+
+function readSession(): ListSessionState {
+  try {
+    const raw = sessionStorage.getItem(BATCH_LIST_SESSION_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<ListSessionState>
+      return {
+        page: Number.isInteger(parsed.page) && (parsed.page ?? 0) > 0 ? parsed.page! : 1,
+        search: typeof parsed.search === 'string' ? parsed.search : '',
+        scrollY:
+          typeof parsed.scrollY === 'number' && parsed.scrollY > 0 ? parsed.scrollY : 0,
+      }
+    }
+  } catch {
+    // 存储不可用/损坏时静默回退
+  }
+  return { page: 1, search: '', scrollY: 0 }
+}
+
+function persistSession(patch: Partial<ListSessionState>) {
+  try {
+    const next = { ...readSession(), ...patch }
+    sessionStorage.setItem(BATCH_LIST_SESSION_KEY, JSON.stringify(next))
+  } catch {
+    // 存储不可用时静默
+  }
+}
+
+function loadSessionPage(): number {
+  return readSession().page
+}
+
+function loadSessionSearch(): string {
+  return readSession().search
+}
+
+function loadStoredPageSize(): number {
+  try {
+    const raw = localStorage.getItem(BATCH_PAGE_SIZE_STORAGE_KEY)
+    const n = raw ? Number(raw) : NaN
+    if ((PAGE_SIZE_OPTIONS as readonly number[]).includes(n)) return n
+  } catch {
+    // 存储不可用时静默回退
+  }
+  return PAGE_SIZE_OPTIONS[0]
+}
+
+function persistPageSize(n: number) {
+  try {
+    localStorage.setItem(BATCH_PAGE_SIZE_STORAGE_KEY, String(n))
+  } catch {
+    // 存储不可用时静默
+  }
 }

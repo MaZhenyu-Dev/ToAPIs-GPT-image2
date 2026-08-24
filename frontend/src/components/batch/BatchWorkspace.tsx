@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   deleteBatch,
   generateBatch,
@@ -279,29 +279,37 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
   }, [prefix, refreshTodayCount])
 
   // ---------- 批次快速切换 ----------
-  const loadSwitchBatches = useCallback(async () => {
+  // 默认展示最近 50 个批次；切换条支持搜索（q 全库模糊查询），
+  // 任意批次（超过 50 条/更早的）都能搜到并切换
+  const switchSearchRef = useRef('')
+
+  const loadSwitchBatches = useCallback(async (q?: string) => {
     try {
-      const response = await listRecentBatches({ page: 1, pageSize: 50 })
+      const response = await listRecentBatches({
+        page: 1,
+        pageSize: 50,
+        q: q || undefined,
+      })
       setSwitchBatches(response.batches)
     } catch {
       // 切换条非关键信息，失败静默
     }
   }, [])
 
-  // 打开/切换详情时刷新切换条
+  // 打开/切换详情时刷新切换条（无搜索词 = 最近 50 条）
   useEffect(() => {
     if (!batch) return
     void loadSwitchBatches()
   }, [batch?.batch_id, loadSwitchBatches])
 
-  // 切换条内有未完成批次时静默轮询，保持状态点实时
+  // 切换条内有未完成批次时静默轮询，保持状态点实时（轮询沿用当前搜索词）
   const hasIncompleteInStrip = switchBatches.some(
     (b) => b.completed_count < b.task_count
   )
   useEffect(() => {
     if (!batch || !hasIncompleteInStrip) return
     const timer = setInterval(() => {
-      void loadSwitchBatches()
+      void loadSwitchBatches(switchSearchRef.current || undefined)
     }, POLL_INTERVAL_MS)
     return () => clearInterval(timer)
   }, [batch, hasIncompleteInStrip, loadSwitchBatches])
@@ -555,6 +563,10 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
           recentBatches={switchBatches}
           switchingBatchId={switchingBatchId}
           onSwitchBatch={(batchId) => void handleSwitchBatch(batchId)}
+          onSearchSwitchBatches={(q) => {
+            switchSearchRef.current = q
+            void loadSwitchBatches(q || undefined)
+          }}
           onBack={handleBackToList}
           onRetryFailed={handleRetryFailed}
           onRegenerateTask={handleRegenerateTask}

@@ -505,7 +505,7 @@ class I2iMultiCreateResponse(BaseModel):
 # 注：Literal 必须显式列出（Python 3.10 及以下不支持 Literal[*list]），
 # 修改模型清单时记得同步 TITLE_MODEL_ORDER 与 SUPPORTED_TITLE_MODELS。
 TITLE_MODEL_ORDER = [
-    "gemini-3.6-flash",
+    "gemini-3.7-flash",
     "gpt-5.6-terra",
     "gpt-5.4-mini",
     "claude-haiku-4-5",
@@ -518,7 +518,7 @@ TITLE_MODEL_ORDER = [
 ]
 
 SUPPORTED_TITLE_MODELS = Literal[
-    "gemini-3.6-flash",
+    "gemini-3.7-flash",
     "gpt-5.6-terra",
     "gpt-5.4-mini",
     "claude-haiku-4-5",
@@ -561,7 +561,7 @@ class TitleGenerateRequest(BaseModel):
         ),
     )
     image_index: int = Field(..., ge=1, le=1000, description="从每个批次中取第几张图（1-based）")
-    model: SUPPORTED_TITLE_MODELS = "gemini-3.6-flash"
+    model: SUPPORTED_TITLE_MODELS = "gemini-3.7-flash"
     system_prompt: Optional[str] = Field(
         default=None,
         description=(

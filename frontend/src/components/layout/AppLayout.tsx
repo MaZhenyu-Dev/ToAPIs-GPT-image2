@@ -37,7 +37,7 @@ export default function AppLayout({
               <IconLayers width={18} height={18} />
             </span>
             <span>
-              <span className="sidebar-brand-title">GPT-Image-2</span>
+              <span className="sidebar-brand-title">图灵</span>
               <br />
               <span className="sidebar-brand-sub">批量变体生成工作台</span>
             </span>

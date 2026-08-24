@@ -91,6 +91,12 @@ export const DEFAULT_BATCH_PREFIX = 'MZY'
 export const BATCH_PREFIX_PATTERN = /^[A-Z0-9]{1,10}$/
 export const BATCH_PREFIX_STORAGE_KEY = 'gpt2.batchPrefix'
 
+// 近期批次列表状态持久化：
+// - 分页大小：localStorage（跨会话记住用户偏好，如 300）
+// - 页码 / 搜索词：sessionStorage（点开批次返回时恢复位置；关浏览器自动清空）
+export const BATCH_PAGE_SIZE_STORAGE_KEY = 'gpt2.batchPageSize'
+export const BATCH_LIST_SESSION_KEY = 'gpt2.batchListSession'
+
 // 接力套图批次前缀：独立于裂变前缀，持久化记忆（设一次长期生效，可随时改）
 export const DEFAULT_RELAY_PREFIX = 'TAO'
 export const RELAY_PREFIX_STORAGE_KEY = 'gpt2.relayPrefix'
@@ -116,8 +122,8 @@ export const I2I_MULTI_IMAGE_EXTS = ['png', 'jpg', 'jpeg'] as const
 // 顺序即失败重试的切换顺序：性价比高、稳定的模型排前面；贵的/弱的排后面。
 export const TITLE_MODEL_OPTIONS = [
   {
-    id: 'gemini-3.6-flash',
-    label: 'Gemini 3.6 Flash',
+    id: 'gemini-3.7-flash',
+    label: 'Gemini 3.7 Flash',
     description: '默认 / 速度快 / 性价比高',
   },
   {

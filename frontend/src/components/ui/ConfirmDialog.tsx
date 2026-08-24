@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
 import { IconAlertTriangle } from './Icon'
 import GlassButton from './GlassButton'
@@ -119,7 +120,9 @@ function ConfirmDialog({
     if (e.target === e.currentTarget) onClose()
   }
 
-  return (
+  // Portal 挂到 body：祖先容器的 backdrop-filter / transform 会破坏 fixed
+  // 定位（成为 containing block），导致遮罩只覆盖容器区域而非全屏
+  return createPortal(
     <div className="modal-overlay" onClick={handleBackdropClick}>
       <div
         className="modal"
@@ -149,6 +152,7 @@ function ConfirmDialog({
           </GlassButton>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
