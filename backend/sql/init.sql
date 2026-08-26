@@ -69,6 +69,43 @@ CREATE TABLE IF NOT EXISTS `generation_tasks` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='生成任务';
 
+-- 工厂 ERP 会话配置（单行，id=1）：仅存 cookie，账号密码不入库
+CREATE TABLE IF NOT EXISTS `erp_config` (
+    `id` INT NOT NULL PRIMARY KEY,
+    `cookies` TEXT NULL COMMENT 'ERP 会话 cookie（JSON，含 _identity-backend 等）',
+    `updated_at` DATETIME NULL COMMENT '最近一次登录/会话更新时间',
+    `last_error` TEXT NULL COMMENT '最近一次会话错误信息'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='工厂 ERP 会话配置';
+
+-- 工厂 ERP 图片缺失订单快照 + 提取产品图业务状态
+CREATE TABLE IF NOT EXISTS `erp_order_items` (
+    `order_item_id` BIGINT NOT NULL PRIMARY KEY COMMENT 'ERP 订单条目 ID（唯一键）',
+    `supplier_id` INT NOT NULL COMMENT 'ERP 店铺 ID（供应商 ID）',
+    `store_name` VARCHAR(100) NOT NULL COMMENT '店铺名称',
+    `goods_sn` VARCHAR(64) NOT NULL COMMENT '内部货号',
+    `size` VARCHAR(32) NULL COMMENT '尺寸，如 80x400',
+    `sku` VARCHAR(128) NULL COMMENT 'SKU 货号',
+    `skcid` VARCHAR(64) NULL COMMENT 'SKCID',
+    `skuid` VARCHAR(64) NULL COMMENT 'SKUID',
+    `material` VARCHAR(255) NULL COMMENT '材质',
+    `input_image_url` VARCHAR(500) NULL COMMENT 'AI 输入图（ERP 图片列缩略图地址）',
+    `order_sn` VARCHAR(64) NULL COMMENT '备货单号',
+    `quantity` INT NOT NULL DEFAULT 1 COMMENT '数量',
+    `batch_id` VARCHAR(36) NULL COMMENT '关联生成批次号（{PREFIX}{MMDD}{SEQ}）',
+    `generation_task_id` BIGINT NULL COMMENT '关联 generation_tasks.id（店铺+货号去重后共享一个任务）',
+    `result_image_url` VARCHAR(500) NULL COMMENT '生成结果图 URL',
+    `erp_uploaded_at` DATETIME NULL COMMENT '已上传回 ERP 的时间（非空=已上传）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_erp_order_items_supplier` (`supplier_id`),
+    INDEX `idx_erp_order_items_store` (`store_name`),
+    INDEX `idx_erp_order_items_goods` (`goods_sn`),
+    INDEX `idx_erp_order_items_batch` (`batch_id`),
+    INDEX `idx_erp_order_items_task` (`generation_task_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='工厂 ERP 图片缺失订单 + 提取产品图状态';
+
 -- 标题生成任务表（多模态 chat/completions 生成的电商标题）
 -- 关联 generation_tasks.id 作为底图来源；每次「生成 / 重新生成」都新建一条记录
 CREATE TABLE IF NOT EXISTS `title_tasks` (

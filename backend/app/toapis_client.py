@@ -144,23 +144,39 @@ class ToApisClient:
 
     async def upload_image(self, file: UploadFile) -> str:
         """上传图片到 ToAPIs 并返回公开 URL。"""
-        url = f"{self.base_url}/v1/uploads/images"
         content = await file.read()
+        return await self.upload_image_bytes(
+            content, file.filename or "image", file.content_type or "application/octet-stream"
+        )
+
+    async def upload_image_bytes(
+        self, content: bytes, filename: str = "image.png", content_type: str = "image/png"
+    ) -> str:
+        """上传图片字节流到 ToAPIs 并返回公开 URL（内部 / ERP 爬取图片用）。"""
+        url = f"{self.base_url}/v1/uploads/images"
         try:
             response = await self._client.post(
                 url,
                 headers=self._headers(),
                 files={
                     "file": (
-                        file.filename or "image",
+                        filename,
                         content,
-                        file.content_type or "application/octet-stream",
+                        content_type,
                     )
                 },
             )
             response.raise_for_status()
         except httpx.TimeoutException as exc:
             raise HTTPException(status_code=504, detail=f"上传超时: {exc}") from exc
+        except httpx.ConnectError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "ToAPIs 连接失败（代理未开启或网络不可达）："
+                    f"{exc}"
+                ),
+            ) from exc
         except httpx.HTTPStatusError as exc:
             detail = self._extract_error(exc.response)
             raise HTTPException(

@@ -9,7 +9,15 @@ from backend.app.config import settings
 from backend.app.database import engine
 from backend.app.migrations import run_migrations
 from backend.app.models import Base
-from backend.app.routers import batch, generations, product_swap, title_generation, variant_groups
+from backend.app.routers import (
+    batch,
+    erp,
+    extract,
+    generations,
+    product_swap,
+    title_generation,
+    variant_groups,
+)
 from backend.app.services.background_poller import background_poller
 from backend.app.toapis_client import client
 
@@ -50,6 +58,8 @@ app.include_router(variant_groups.router, prefix="/api")
 app.include_router(batch.router, prefix="/api")
 app.include_router(product_swap.router, prefix="/api")
 app.include_router(title_generation.router, prefix="/api")
+app.include_router(erp.router, prefix="/api")
+app.include_router(extract.router, prefix="/api")
 
 
 @app.get("/health")

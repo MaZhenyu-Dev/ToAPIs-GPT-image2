@@ -5,6 +5,17 @@ import type {
   BatchListResponse,
   BatchRetryResponse,
   BatchStatusResponse,
+  ErpExtractUnit,
+  ErpGenerateRequest,
+  ErpGenerateResponse,
+  ErpHistoryResponse,
+  ErpOrdersPreviewResponse,
+  ErpSessionStatus,
+  ErpStore,
+  ErpUploadAllResponse,
+  ErpUploadResult,
+  ExtractGenerateRequest,
+  ExtractHistoryResponse,
   GenerationTaskItem,
   I2iMultiCreateRequest,
   I2iMultiCreateResponse,
@@ -146,7 +157,13 @@ export function retryBatch(batchId: string): Promise<BatchGenerateResponse> {
 export function regenerateTask(
   batchId: string,
   taskId: number,
-  payload?: { model?: string; quality?: string }
+  payload?: {
+    model?: string
+    quality?: string
+    size?: string
+    resolution?: string
+    prompt?: string
+  }
 ): Promise<GenerationTaskItem> {
   return fetchJson<GenerationTaskItem>(
     `/api/batches/${batchId}/tasks/${taskId}/regenerate`,
@@ -374,4 +391,93 @@ export async function exportTitlesCsv(batchIds?: string[] | null): Promise<void>
   document.body.removeChild(a)
   // 延迟释放，避免某些浏览器在 click 还没完成时回收 URL
   setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+}
+
+// ---------- 提取产品图（工厂 ERP） ----------
+
+export function erpLogin(username: string, password: string): Promise<{ stores: ErpStore[] }> {
+  return fetchJson<{ stores: ErpStore[] }>('/api/erp/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  })
+}
+
+export function erpSessionStatus(): Promise<ErpSessionStatus> {
+  return fetchJson<ErpSessionStatus>('/api/erp/session')
+}
+
+export function erpListStores(): Promise<ErpStore[]> {
+  return fetchJson<ErpStore[]>('/api/erp/stores')
+}
+
+export function erpOrdersPreview(supplierIds: number[]): Promise<ErpOrdersPreviewResponse> {
+  return fetchJson<ErpOrdersPreviewResponse>('/api/erp/orders/preview', {
+    method: 'POST',
+    body: JSON.stringify({ supplier_ids: supplierIds }),
+  })
+}
+
+export function erpGenerate(payload: ErpGenerateRequest): Promise<ErpGenerateResponse> {
+  return fetchJson<ErpGenerateResponse>('/api/erp/generate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function erpOrdersList(
+  supplierIds: number[] = [],
+  status = ''
+): Promise<ErpOrdersPreviewResponse> {
+  const qs = new URLSearchParams()
+  if (supplierIds.length > 0) qs.set('supplier_ids', supplierIds.join(','))
+  if (status) qs.set('status', status)
+  const query = qs.toString()
+  return fetchJson<ErpOrdersPreviewResponse>(`/api/erp/orders${query ? `?${query}` : ''}`)
+}
+
+// 生成历史（本地持久化记录，含已上传 ERP 后消失的订单）
+export function erpHistory(q = ''): Promise<ErpHistoryResponse> {
+  const query = q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ''
+  return fetchJson<ErpHistoryResponse>(`/api/erp/history${query}`)
+}
+
+export function erpUploadOrder(orderItemId: number): Promise<ErpUploadResult> {
+  return fetchJson<ErpUploadResult>('/api/erp/upload', {
+    method: 'POST',
+    body: JSON.stringify({ order_item_id: orderItemId }),
+  })
+}
+
+export function erpUploadAll(supplierIds?: number[]): Promise<ErpUploadAllResponse> {
+  return fetchJson<ErpUploadAllResponse>('/api/erp/upload-all', {
+    method: 'POST',
+    body: JSON.stringify(supplierIds && supplierIds.length > 0 ? { supplier_ids: supplierIds } : {}),
+  })
+}
+
+export function erpPrompts(): Promise<{ prompts: Record<string, string>; labels: Record<string, string> }> {
+  return fetchJson<{ prompts: Record<string, string>; labels: Record<string, string> }>('/api/erp/prompt')
+}
+
+// ---------- 提取产品图（用户自定义） ----------
+
+export function extractGenerate(
+  payload: ExtractGenerateRequest
+): Promise<BatchGenerateResponse> {
+  return fetchJson<BatchGenerateResponse>('/api/extract/generate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+// 用户自定义提取历史（任务级，按创建时间倒序）
+export function extractHistory(limit = 50): Promise<ExtractHistoryResponse> {
+  return fetchJson<ExtractHistoryResponse>(
+    `/api/extract/history?limit=${limit}`
+  )
+}
+
+// 提取任务列表（按状态过滤） —— 前端轮询/刷新单元状态用
+export function fetchErpUnits(supplierIds: number[]): Promise<ErpExtractUnit[]> {
+  return erpOrdersList(supplierIds).then((r) => r.units)
 }

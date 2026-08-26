@@ -111,9 +111,62 @@ def load_carpet_prompts() -> dict[str, str]:
 CARPET_PROMPTS: dict[str, str] = load_carpet_prompts()
 
 
+# ---------- 提取产品图 prompt ----------
+
+# 2 个地毯类型 → 对应 .md 文件名（与标题生成同一套文件加载模式）
+_EXTRACT_TYPE_TO_FILE: dict[str, str] = {
+    "living_room": "extract_living_room.md",
+    "corridor": "extract_corridor.md",
+}
+
+# 中文标签（前端展示用）
+EXTRACT_PROMPT_LABELS: dict[str, str] = {
+    "living_room": "客厅地毯",
+    "corridor": "走廊地毯",
+}
+
+# 默认通用 prompt（无预设类型时的兜底）
+DEFAULT_EXTRACT_PROMPT = (
+    "根据参考图中的产品图案，生成一张干净平整的电商产品图："
+    "完整展示产品整体图案，色彩还原真实自然，主体居中，"
+    "无褶皱阴影、无水印文字、无杂物背景，适合作为 Temu 商品原图。"
+)
+
+
+def load_extract_prompts() -> dict[str, str]:
+    """启动时一次性加载提取产品图 prompt 文件到内存 dict。
+
+    加载失败（文件缺失 / 内容为空）时回退到内置 DEFAULT_EXTRACT_PROMPT。
+    """
+    prompts: dict[str, str] = {}
+    for prompt_type, filename in _EXTRACT_TYPE_TO_FILE.items():
+        path = PROMPTS_DIR / filename
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+            if not content:
+                raise ValueError("文件为空")
+            prompts[prompt_type] = content
+            logger.info("已加载提取 prompt: %s (%d chars)", filename, len(content))
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            logger.warning(
+                "提取 prompt 文件 %s 加载失败（%s），回退到内置 DEFAULT_EXTRACT_PROMPT",
+                filename, exc,
+            )
+            prompts[prompt_type] = DEFAULT_EXTRACT_PROMPT
+    return prompts
+
+
+# 模块级常量：服务启动后整个进程生命周期复用，不重复读盘
+EXTRACT_PROMPTS: dict[str, str] = load_extract_prompts()
+
+
 __all__ = [
     "CARPET_PROMPTS",
     "CARPET_TYPE_LABELS",
     "DEFAULT_CARPET_TITLE_SYSTEM_PROMPT",
     "load_carpet_prompts",
+    "EXTRACT_PROMPTS",
+    "EXTRACT_PROMPT_LABELS",
+    "DEFAULT_EXTRACT_PROMPT",
+    "load_extract_prompts",
 ]

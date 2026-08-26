@@ -168,7 +168,8 @@ async def regenerate_task(
 ):
     """重新生成指定任务：复用 task_id，仅替换远端生成结果。
 
-    可选请求体 TaskRegenerateRequest：覆盖 model / quality（前端"重新生成"弹窗）；
+    可选请求体 TaskRegenerateRequest：覆盖 model / quality（前端"重新生成"弹窗），
+    以及 size / resolution（提取产品图模式允许调整尺寸）；
     不传则沿用任务原配置。
     """
     try:
@@ -178,6 +179,9 @@ async def regenerate_task(
             task_id,
             model=body.model if body else None,
             quality=body.quality if body else None,
+            size=body.size if body else None,
+            resolution=body.resolution if body else None,
+            prompt=body.prompt if body else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -265,6 +265,9 @@ async def get_recent_batches(
         func.max(GenerationTask.retried_count).label("retried_count"),
         func.max(GenerationTask.created_at).label("last_created_at"),
     )
+    # 排除提取产品图批次（mode=extract）：它们以「店铺名-货号」为批次号，
+    # 由「提取产品图」页管理，不进入本列表，避免污染现有批量生成工作流。
+    stmt = stmt.where(GenerationTask.mode != "extract")
     # 注意：不能无条件 .where(None)——SQLAlchemy 会编译出 "WHERE NULL"，
     # MySQL 下恒假导致返回空列表
     if where is not None:

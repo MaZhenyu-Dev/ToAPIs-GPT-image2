@@ -91,6 +91,63 @@ class GenerationTask(Base):
     variant: Mapped["Variant | None"] = relationship("Variant", lazy="joined")
 
 
+class ErpConfig(Base):
+    """工厂 ERP（七彩ERP）会话配置：单行记录（id 恒为 1）。
+
+    cookies 为 JSON 字符串（_identity-backend / _csrf-backend / advanced-backend 等）。
+    账号密码永不落库：过期后由用户重新输入获取新 cookie。
+    """
+
+    __tablename__ = "erp_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cookies: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 最近一次会话探测/登录时间（用于前端显示 cookie 状态）
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ErpOrderItem(Base):
+    """工厂 ERP 图片缺失订单快照 + 提取产品图业务状态。
+
+    一次爬取把所选店铺的全部缺失订单落库（upsert 按 order_item_id）；
+    「店铺 + 货号」去重后的一个生成单元对应一个 generation_task（多行共享
+    generation_task_id），生成图上传回 ERP 时对单元内每个 order_item_id 都提交。
+
+    erp_uploaded_at 非空 = 该订单已上传成功（ERP 中订单移出缺失列表后，
+    本地记录永久保留供追溯）。
+    """
+
+    __tablename__ = "erp_order_items"
+
+    order_item_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    supplier_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    store_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    goods_sn: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    size: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    sku: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    skcid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    skuid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    material: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    order_sn: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    generation_task_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, index=True
+    )
+    result_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    erp_uploaded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now(), nullable=True
+    )
+
+
 class TitleTask(Base):
     """标题生成任务：基于已完成的 generation_task 图片调用多模态模型生成电商标题。
 

@@ -1,4 +1,5 @@
 import asyncio
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
@@ -23,6 +24,7 @@ from backend.app.models import GenerationTask
 from backend.app.schemas import (
     AUTO_RETRY_MODELS,
     AUTO_RETRY_QUALITY,
+    EXTREME_SIZES,
     MAX_AUTO_RETRY,
     QUALITY_SUPPORTED_MODELS,
     BatchGenerateRequest,
@@ -31,6 +33,21 @@ from backend.app.schemas import (
     RelayConfig,
 )
 from backend.app.toapis_client import client
+
+# 提取 prompt 中的宽高比占位符：{ASPECT_RATIO, e.g. 3:2} 这类写法
+# （大小写不敏感，允许占位符内带示例说明文字），提交时按任务实际 size 替换
+ASPECT_RATIO_PATTERN = re.compile(r"\{ASPECT_RATIO[^}]*\}", re.IGNORECASE)
+
+
+def replace_aspect_ratio(prompt: str, size: str) -> str:
+    """把 prompt 中的 {ASPECT_RATIO...} 占位符替换为实际生成比例。
+
+    无占位符时原样返回；用户手动改过占位符内容同样被替换
+    （匹配规则是 {} 包裹的 ASPECT_RATIO 关键字，大小写不敏感）。
+    """
+    if not prompt or "ASPECT_RATIO" not in prompt.upper():
+        return prompt
+    return ASPECT_RATIO_PATTERN.sub(size, prompt)
 
 
 def _group_by_batch(
@@ -344,6 +361,84 @@ class BatchGeneratorService:
 
         return target_batch_ids, N * K, base_batch_id
 
+    async def allocate_batch_id(self, db: AsyncSession, prefix: str) -> str:
+        """公开分配一个批次号（{prefix}{MMDD}{seq}，进程内串行化）。"""
+        async with self._id_lock:
+            return await self._generate_batch_id(db, prefix)
+
+    async def create_extract_batch(
+        self,
+        db: AsyncSession,
+        *,
+        batch_id: str,
+        prompt: str,
+        items: Sequence[dict],
+        resolution: str,
+        model: str,
+        quality: str | None,
+    ) -> tuple[str, list[GenerationTask]]:
+        """提取产品图模式：1 批次 + N 任务，每个任务一张独立参考图 + 统一 prompt。
+
+        ``items``: [{order_item_id, input_image_url, size, model?}]，size 已由调用方
+        映射为预设比例（auto 按订单尺寸 / fixed 全统一）。item 可带 ``model``
+        覆盖任务级模型（极端宽高比货号自动用 gemini，其余沿用全局模型）。
+        任务与订单条目的关联（erp_order_items.generation_task_id）由调用方在返回后处理。
+
+        ``batch_id`` 由调用方显式传入：
+        - 工厂自动化：店铺名-货号（每个货号一个批次，可读可追溯）
+        - 用户自定义：allocate_batch_id 分配的 {prefix}{MMDD}{seq}
+
+        与 product_swap 的区别：每任务一张输入图（不是模板+产品两张），
+        reference_image_urls 直接存输入图 URL，prompt 存任务级。
+        """
+        if not items:
+            raise ValueError("没有可生成的订单/图片")
+        if not batch_id or len(batch_id) > 36:
+            raise ValueError(f"batch_id 非法（长度 1-36）: {batch_id!r}")
+
+        tasks: list[GenerationTask] = []
+        for item in items:
+            input_url = item["input_image_url"]
+            if not input_url:
+                continue
+            task_model = item.get("model") or model
+            # gemini 模型不支持 quality 档位
+            task_quality = quality if task_model in QUALITY_SUPPORTED_MODELS else None
+            tasks.append(
+                GenerationTask(
+                    batch_id=batch_id,
+                    variant_id=None,
+                    mode="extract",
+                    size=item["size"],
+                    resolution=resolution,
+                    model=task_model,
+                    quality=task_quality,
+                    status="pending",
+                    progress=0,
+                    # 每个任务按自身比例替换 {ASPECT_RATIO} 占位符
+                    # （auto 映射下各任务比例可能不同，逐任务替换最准确）
+                    prompt=replace_aspect_ratio(prompt, item["size"]),
+                    # 每任务独立输入图（与 i2i_multi 相同语义）
+                    reference_image_urls=input_url,
+                )
+            )
+        if not tasks:
+            raise ValueError("没有可生成的订单/图片")
+
+        await create_generation_tasks(db, tasks)
+
+        carrier = BatchGenerateRequest(
+            group_id=1,  # extract 不依赖变体，仅占位
+            mode="extract",
+            size=tasks[0].size,
+            resolution=resolution,
+            model=model,
+            quality=quality,
+            prefix="EXT",  # 占位；_build_payload 对 extract 模式用 task.size
+        )
+        asyncio.create_task(self._submit_to_toapis(batch_id, tasks, carrier))
+        return batch_id, tasks
+
     async def _submit_to_toapis(
         self,
         batch_id: str,
@@ -463,6 +558,12 @@ class BatchGeneratorService:
         if task.auto_retry_count >= MAX_AUTO_RETRY:
             return False
 
+        # 极端宽高比任务跳过自动重试：重试阶梯（gpt→vip→gemini preview）
+        # 都不支持 4:1/8:1，自动重试必然再次失败（浪费调用）。
+        # 由用户手动重试（手动重试会用任务当前模型=官方 gemini 渠道）。
+        if task.size in EXTREME_SIZES:
+            return False
+
         async with self._auto_retry_lock:
             fresh = await db.get(GenerationTask, task.id)
             if (
@@ -570,12 +671,20 @@ class BatchGeneratorService:
             "n": 1,
             "response_format": "url",
         }
+        # extract 模式：每任务独立 size（auto 映射按订单尺寸，可能各不相同）
+        if task.mode == "extract" and task.size:
+            payload["size"] = task.size
 
         if model == "gpt-image-2-vip":
             payload["resolution"] = request.resolution
             if quality:
                 payload["quality"] = quality
-        elif model == "gemini-3.1-flash-image-preview":
+        elif model in (
+            "gemini-3.1-flash-image-preview",
+            "gemini-3.1-flash-image-preview-official",
+        ):
+            # 两个 gemini 渠道（W8X 中转 / Vertex 官方直连）均使用
+            # metadata.resolution（大写 1K/2K/4K），官方渠道额外支持 4:1/8:1
             payload["metadata"] = {"resolution": request.resolution.upper()}
         else:  # gpt-image-2 及未知模型：保持原有行为
             payload["resolution"] = request.resolution
@@ -592,9 +701,10 @@ class BatchGeneratorService:
         # 参考图优先级（保证每个模式的"语义边界"清晰可读）：
         # 1. i2i_multi 模式：用 task.reference_image_urls（每任务独立参考图）
         #    - 由 create_i2i_multi 在 task 级别写入，不依赖 request 级共享
-        # 2. product_swap 模式：用 [template, product]
-        # 3. i2i 模式：用 request.reference_image_urls（批次内共享）
-        if task.mode == "i2i_multi" and task.reference_image_urls:
+        # 2. extract / extract_custom 模式：同 i2i_multi，每任务独立输入图
+        # 3. product_swap 模式：用 [template, product]
+        # 4. i2i 模式：用 request.reference_image_urls（批次内共享）
+        if task.mode in ("i2i_multi", "extract", "extract_custom") and task.reference_image_urls:
             payload["reference_images"] = task.reference_image_urls.split(",")
         elif task.mode == "product_swap" and task.template_image_url and task.product_image_url:
             payload["reference_images"] = [
@@ -613,6 +723,9 @@ class BatchGeneratorService:
         task_id: int,
         model: str | None = None,
         quality: str | None = None,
+        size: str | None = None,
+        resolution: str | None = None,
+        prompt: str | None = None,
     ) -> GenerationTask:
         """重新生成单个任务：重置状态后重新提交到 ToAPIs。
 
@@ -622,6 +735,12 @@ class BatchGeneratorService:
         model / quality：用户可在此覆盖生成模型与精度（前端"重新生成"弹窗）；
         不传则沿用任务当前值。换到不支持精度的模型时清空 quality，
         避免残留导致后续手动重试重建请求时被 schema 校验拒绝（422）。
+
+        size / resolution：可选覆盖（提取产品图模式重新生成允许调整尺寸）；
+        不传则沿用任务原配置。size 单独覆盖时 resolution 必须同时覆盖。
+
+        prompt：可选覆盖（提取产品图模式与前端文本框实时同步）；
+        不传则沿用任务创建时保存的 prompt 快照。
         """
         task = await get_task_by_id(db, task_id)
         if task is None or task.batch_id != batch_id:
@@ -640,6 +759,15 @@ class BatchGeneratorService:
                 task.quality = None
         elif quality is not None:
             task.quality = quality
+
+        # 尺寸/分辨率覆盖（必须成对提供，schema 已校验）
+        if size is not None and resolution is not None:
+            task.size = size
+            task.resolution = resolution
+
+        # prompt 覆盖（与前端文本框实时同步）
+        if prompt is not None:
+            task.prompt = prompt
 
         await reset_task_for_regenerate(db, task)
 

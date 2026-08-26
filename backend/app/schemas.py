@@ -12,14 +12,23 @@ BATCH_PREFIX_PATTERN = re.compile(r"^[A-Z0-9]{1,10}$")
 SUPPORTED_SIZES = Literal[
     "1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5",
     "16:9", "9:16", "2:1", "1:2", "21:9", "9:21",
+    "4:1", "1:4", "8:1", "1:8",
 ]
+
+# 极端宽高比（4:1/1:4/8:1/1:8）自动切换到 gemini-3.1-flash-image-preview
+EXTREME_SIZES = frozenset({"4:1", "1:4", "8:1", "1:8"})
+EXTREME_RATIO_MODEL = "gemini-3.1-flash-image-preview"
 
 # 生成模式：
 #   t2i        - 文生图
 #   i2i        - 图生图，批次内所有任务共享同一组 reference_image_urls
 #   product_swap - 产品替换，1 模板 + N 产品 → N 任务
 #   i2i_multi  - 文件夹批量图生图：N 张图各自成一个批次，每批次内 K 个任务共享该图片
-GENERATION_MODE = Literal["t2i", "i2i", "product_swap", "i2i_multi"]
+#   extract    - 提取产品图·工厂自动化：1 批次 + N 任务，每任务独立参考图
+#   extract_custom - 提取产品图·用户自定义：同 extract，但无 ERP 关联（历史独立查询）
+GENERATION_MODE = Literal[
+    "t2i", "i2i", "product_swap", "i2i_multi", "extract", "extract_custom"
+]
 
 # 生图模型白名单（与 ToAPIs 文档对齐；前端 IMAGE_MODEL_OPTIONS 需同步）：
 # - gpt-image-2：默认模型，不支持 quality 参数
@@ -30,12 +39,14 @@ IMAGE_MODEL_ORDER = [
     "gpt-image-2",
     "gpt-image-2-vip",
     "gemini-3.1-flash-image-preview",
+    "gemini-3.1-flash-image-preview-official",
 ]
 
 IMAGE_MODEL = Literal[
     "gpt-image-2",
     "gpt-image-2-vip",
     "gemini-3.1-flash-image-preview",
+    "gemini-3.1-flash-image-preview-official",
 ]
 
 # 统一精度档位（low/medium/high）：当前仅 gpt-image-2-vip 支持（quality 参数）
@@ -84,6 +95,12 @@ SIZE_RESOLUTION_MAP: dict[str, dict[str, str]] = {
     "1:2": {"1k": "1024x2048", "2k": "1344x2688", "4k": "1920x3840"},
     "21:9": {"1k": "2016x864", "2k": "2688x1152", "4k": "3840x1648"},
     "9:21": {"1k": "864x2016", "2k": "1152x2688", "4k": "1648x3840"},
+    # 极端宽高比（仅 gemini-3.1-flash-image-preview 支持）：
+    # 像素按短边 ≈1024/2048/4096 近似（ToAPIs 文档未给出精确像素）
+    "4:1": {"1k": "2048x512", "2k": "4096x1024", "4k": "8192x2048"},
+    "1:4": {"1k": "512x2048", "2k": "1024x4096", "4k": "2048x8192"},
+    "8:1": {"1k": "4096x512", "2k": "8192x1024", "4k": "16384x2048"},
+    "1:8": {"1k": "512x4096", "2k": "1024x8192", "4k": "2048x16384"},
 }
 
 
@@ -329,18 +346,58 @@ class ProductSwapRequest(SizeResolutionMixin, ModelQualityMixin):
 class BatchGenerateResponse(BaseModel):
     batch_id: str
     task_count: int
+    # 附加提示信息（如部分订单输入图获取失败），可空
+    message: Optional[str] = None
 
 
 class TaskRegenerateRequest(ModelQualityMixin):
-    """任务重新生成请求：可覆盖模型与精度（尺寸/分辨率等沿用任务原配置）。
+    """任务重新生成请求：可覆盖模型与精度（尺寸/分辨率默认沿用任务原配置）。
 
     - model: 不传则沿用任务当前 model
     - quality: 仅支持 quality 的模型允许传（ModelQualityMixin 校验）；
       换到不支持精度的模型时服务端会清空任务 quality，避免残留导致后续 422
+    - size / resolution: 可选覆盖尺寸与分辨率（提取产品图模式需要，
+      重新生成时允许调整；批量生成等模式不传则沿用任务原配置）。
+      两者必须同时提供，且组合必须有效（SIZE_RESOLUTION_MAP 校验）。
     """
 
     model: Optional[IMAGE_MODEL] = None
     quality: Optional[IMAGE_QUALITY] = None
+    size: Optional[SUPPORTED_SIZES] = None
+    resolution: Optional[Literal["1k", "2k", "4k"]] = None
+    # 覆盖任务 prompt（提取产品图模式重新生成时与前端文本框实时同步）；
+    # 不传则沿用任务创建时保存的 prompt 快照
+    prompt: Optional[str] = Field(None, min_length=1, max_length=32000)
+
+    @model_validator(mode="after")
+    def check_size_resolution_pair(self):
+        if (self.size is None) != (self.resolution is None):
+            raise ValueError("size 与 resolution 必须同时提供或都不提供")
+        if self.size is not None and self.resolution is not None:
+            allowed = SIZE_RESOLUTION_MAP.get(self.size, {})
+            if self.resolution not in allowed:
+                raise ValueError(
+                    f"分辨率 '{self.resolution}' 不支持尺寸 '{self.size}'，"
+                    f"可选: {list(allowed.keys())}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def check_extreme_size_model(self):
+        """极端宽高比（4:1/8:1 等）只有 gemini 模型支持。
+
+        只校验「显式指定了模型」的情况；model 不传则沿用任务原模型
+        （旧任务若已是 gemini 则不受影响）。
+        """
+        if (
+            self.size in EXTREME_SIZES
+            and self.model is not None
+            and self.model != EXTREME_RATIO_MODEL
+        ):
+            raise ValueError(
+                f"宽高比 {self.size} 为极端比例，仅支持模型 {EXTREME_RATIO_MODEL}"
+            )
+        return self
 
 
 class GenerationTaskOut(BaseModel):
@@ -690,3 +747,250 @@ class TitleBatchDeleteRequest(BaseModel):
     """批量删除 TitleTask 请求。"""
 
     title_task_ids: list[int] = Field(..., min_length=1, max_length=500)
+
+
+# ---------- 提取产品图（工厂 ERP / 用户自定义） schema ----------
+
+
+class ErpLoginRequest(BaseModel):
+    """ERP 账号密码登录（只用于获取 cookie，绝不落库）。"""
+
+    username: str = Field(..., min_length=1, max_length=100)
+    password: str = Field(..., min_length=1, max_length=200)
+
+
+class ErpLoginResponse(BaseModel):
+    """登录成功响应：返回店铺列表供前端直接选择。"""
+
+    stores: list["ErpStoreOut"] = Field(default_factory=list)
+
+
+class ErpStoreOut(BaseModel):
+    id: int
+    name: str
+
+
+class ErpSessionStatus(BaseModel):
+    """ERP 会话状态：valid + 店铺数（供前端决定是否展示登录表单）。"""
+
+    valid: bool
+    store_count: int = 0
+    last_error: Optional[str] = None
+
+
+class ErpPreviewRequest(BaseModel):
+    """爬取预览请求：只关心店铺范围（与生成参数解耦）。"""
+
+    supplier_ids: list[int] = Field(..., min_length=1, max_length=50)
+
+
+class ErpGenerateRequest(SizeResolutionMixin, ModelQualityMixin):
+    """工厂自动化生成请求。
+
+    - supplier_ids: 用户选择的店铺 ID 列表（决定爬取范围）
+    - unit_keys: 可选，只生成指定单元（"店铺名::货号"）；不传则生成全部待生成单元
+    - prompt: 提取产品图的统一 prompt
+    - size_mode: auto=按订单尺寸自动映射比例；fixed=全部用固定比例
+    - fixed_size: size_mode=fixed 时必填
+    - size_overrides: 按 order_item_id 覆盖比例（预览时用户逐条调整的结果）
+
+    批次号不再使用 {prefix}{MMDD}{seq}：extract 模式每个货号一个批次，
+    batch_id = 店铺名-货号（超长回退 店铺ID-货号），用户可读、可追溯。
+    """
+
+    supplier_ids: list[int] = Field(..., min_length=1, max_length=50)
+    unit_keys: Optional[list[str]] = Field(
+        default=None,
+        max_length=200,
+        description="只生成指定单元（unit_key）；不传则生成全部待生成单元",
+    )
+    prompt: str = Field(..., min_length=1, max_length=32000)
+    size_mode: Literal["auto", "fixed"] = "auto"
+    fixed_size: Optional[SUPPORTED_SIZES] = None
+    size_overrides: dict[str, SUPPORTED_SIZES] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def check_fixed_size(self):
+        if self.size_mode == "fixed" and not self.fixed_size:
+            raise ValueError("size_mode=fixed 时必须提供 fixed_size")
+        return self
+
+
+class ErpGenerateItem(BaseModel):
+    """单个货号（生成单元）的生成结果。"""
+
+    batch_id: str
+    store_name: str = ""
+    goods_sn: str = ""
+    generation_task_id: Optional[int] = None
+    success: bool = True
+    message: str = ""
+    # 实际使用的模型（极端宽高比货号会自动切到 gemini-3.1-flash-image-preview）
+    model: Optional[str] = None
+
+
+class ErpGenerateResponse(BaseModel):
+    """工厂自动化生成响应：每个货号一个批次，逐条返回结果。"""
+
+    results: list[ErpGenerateItem] = Field(default_factory=list)
+    succeeded: int = 0
+    failed: int = 0
+
+
+class ExtractHistoryItem(BaseModel):
+    """用户自定义提取历史：一条任务记录（含输入/输出图与生成参数）。"""
+
+    task_id: int
+    batch_id: str
+    status: str
+    model: str = "gpt-image-2"
+    quality: Optional[str] = None
+    size: str = "1:1"
+    resolution: str = "1k"
+    prompt: Optional[str] = None
+    input_image_url: Optional[str] = None
+    result_image_url: Optional[str] = None
+    error_msg: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    # 生成任务进度 0-100（ToAPIs 同步）
+    progress: int = 0
+
+
+class ExtractHistoryResponse(BaseModel):
+    """用户自定义提取历史列表（按创建时间倒序）。"""
+
+    items: list[ExtractHistoryItem] = Field(default_factory=list)
+    total: int = 0
+
+
+class ExtractGenerateRequest(SizeResolutionMixin, ModelQualityMixin):
+    """用户自定义提取请求：手动传 N 张图 + 统一 prompt/参数 → N 个任务。
+
+    与工厂自动化的差异：无 ERP 关联，生成完成后由用户自行下载/上传。
+    极端宽高比（4:1/1:4/8:1/1:8）只有 gemini-3.1-flash-image-preview 支持，
+    选择极端比例时必须同时选择该模型（前端会自动切换，此处兜底校验）。
+    """
+
+    image_urls: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=20,
+        description="输入图 URL 列表（已上传到 ToAPIs），1-20 项",
+    )
+    prompt: str = Field(..., min_length=1, max_length=32000)
+    prefix: str = Field(default="MZY", description="批次号前缀，仅允许 A-Z / 0-9")
+
+    @field_validator("prefix")
+    @classmethod
+    def validate_prefix(cls, v: str) -> str:
+        v = v.upper()
+        if not BATCH_PREFIX_PATTERN.match(v):
+            raise ValueError("prefix 仅支持 1-10 位 A-Z / 0-9 字符")
+        return v
+
+    @field_validator("image_urls")
+    @classmethod
+    def validate_urls(cls, v: list[str]) -> list[str]:
+        for url in v:
+            if not url.startswith(("http://", "https://")):
+                raise ValueError(f"URL 必须以 http:// 或 https:// 开头: {url!r}")
+            if "," in url:
+                raise ValueError(f"URL 不得含逗号（会破坏 CSV 切分）: {url!r}")
+        return v
+
+    @model_validator(mode="after")
+    def check_extreme_size_model(self):
+        if self.size in EXTREME_SIZES and self.model != EXTREME_RATIO_MODEL:
+            raise ValueError(
+                f"宽高比 {self.size} 为极端比例，仅支持模型 {EXTREME_RATIO_MODEL}"
+            )
+        return self
+
+
+class ErpExtractUnit(BaseModel):
+    """一个生成单元（店铺 + 货号去重后）。
+
+    status 语义：
+    - pending    未生成
+    - generating 生成中
+    - completed  已生成（可上传）
+    - failed     生成失败（可重试）
+    - uploaded   已上传回 ERP
+    """
+
+    unit_key: str
+    supplier_id: int = 0
+    store_name: str
+    goods_sn: str
+    order_item_ids: list[int]
+    representative_order_item_id: int
+    input_image_url: str
+    size: str
+    material: Optional[str] = None
+    mapped_ratio: str = "1:1"
+    batch_id: Optional[str] = None
+    generation_task_id: Optional[int] = None
+    status: str = "pending"
+    result_image_url: Optional[str] = None
+    error_msg: Optional[str] = None
+    created_at: Optional[datetime] = None
+    erp_uploaded_at: Optional[datetime] = None
+    # 生成任务进度 0-100（ToAPIs 同步，展示在输出图加载动画上）
+    progress: int = 0
+
+
+class ErpHistoryResponse(BaseModel):
+    """生成历史记录（持久化查询，不依赖 ERP 爬取）。
+
+    units 按 created_at 倒序（最新在前）；total 为过滤后的单元总数。
+    """
+
+    units: list[ErpExtractUnit] = Field(default_factory=list)
+    total: int = 0
+
+
+class ErpOrdersPreviewResponse(BaseModel):
+    """爬取 + 落库后的生成单元预览（前端渲染任务列表与"开始生成"按钮）。"""
+
+    supplier_ids: list[int]
+    crawled_count: int = 0
+    units: list[ErpExtractUnit] = Field(default_factory=list)
+
+    @property
+    def pending_count(self) -> int:
+        return sum(1 for u in self.units if u.status == "pending")
+
+
+class ErpUploadRequest(BaseModel):
+    """单条上传：按 order_item_id 上传（该货号同店铺的其他订单一起覆盖）。"""
+
+    order_item_id: int = Field(..., ge=1)
+
+
+class ErpUploadAllRequest(BaseModel):
+    """批量上传请求：上传所有已完成（未上传）的生成单元。
+
+    supplier_ids 不传 = 全部店铺；传了只上传所选店铺的单元。
+    """
+
+    supplier_ids: Optional[list[int]] = Field(default=None, max_length=50)
+
+
+class ErpUploadResult(BaseModel):
+    """上传结果（单条/批量通用）。"""
+
+    order_item_id: int
+    store_name: str = ""
+    goods_sn: str = ""
+    success: bool
+    message: str = ""
+
+
+class ErpUploadAllResponse(BaseModel):
+    results: list[ErpUploadResult]
+    succeeded: int = 0
+    failed: int = 0
+
+
+ErpLoginResponse.model_rebuild()

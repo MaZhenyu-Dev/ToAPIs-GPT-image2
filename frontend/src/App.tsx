@@ -3,6 +3,7 @@ import { listVariantGroups } from './api'
 import BatchWorkspace from './components/batch/BatchWorkspace'
 import { ConfirmDialogProvider } from './components/ui/ConfirmDialog'
 import ErrorBoundary from './components/ErrorBoundary'
+import ExtractWorkspace from './components/extract/ExtractWorkspace'
 import GlassCard from './components/ui/GlassCard'
 import AppLayout from './components/layout/AppLayout'
 import type { TabKey } from './config/navigation'
@@ -77,6 +78,14 @@ export default function App() {
                     selectedGroupId={selectedGroupId ?? null}
                   />
                 )}
+              </div>
+            )}
+          </ErrorBoundary>
+
+          <ErrorBoundary>
+            {activeTab === 'extract' && (
+              <div className="tab-pane">
+                <ExtractWorkspace />
               </div>
             )}
           </ErrorBoundary>

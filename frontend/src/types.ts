@@ -279,3 +279,138 @@ export interface TitlePromptsResponse {
   prompts: Record<CarpetType, string>
   labels: Record<CarpetType, string>
 }
+
+// ---------- 提取产品图（工厂 ERP / 用户自定义） ----------
+
+// 工厂 ERP 店铺
+export interface ErpStore {
+  id: number
+  name: string
+}
+
+// ERP 会话状态
+export interface ErpSessionStatus {
+  valid: boolean
+  store_count: number
+  last_error: string | null
+}
+
+// 生成单元（店铺 + 货号去重后）
+export interface ErpExtractUnit {
+  unit_key: string
+  supplier_id: number
+  store_name: string
+  goods_sn: string
+  order_item_ids: number[]
+  representative_order_item_id: number
+  input_image_url: string
+  size: string
+  material: string | null
+  mapped_ratio: string
+  batch_id: string | null
+  generation_task_id: number | null
+  status: 'pending' | 'generating' | 'completed' | 'failed' | 'uploaded'
+  result_image_url: string | null
+  error_msg: string | null
+  created_at: string | null
+  erp_uploaded_at: string | null
+  /** 生成任务进度 0-100（ToAPIs 同步） */
+  progress: number
+}
+
+export interface ErpOrdersPreviewResponse {
+  supplier_ids: number[]
+  crawled_count: number
+  units: ErpExtractUnit[]
+}
+
+// 生成历史记录（持久化查询，不依赖 ERP 爬取）
+export interface ErpHistoryResponse {
+  units: ErpExtractUnit[]
+  total: number
+}
+
+// 工厂自动化生成请求
+export interface ErpGenerateRequest {
+  supplier_ids: number[]
+  /** 只生成指定单元（unit_key）；不传则生成全部待生成单元 */
+  unit_keys?: string[]
+  prompt: string
+  size_mode: 'auto' | 'fixed'
+  fixed_size?: string
+  size_overrides?: Record<string, string>
+  size: string
+  resolution: string
+  model?: ImageModelId
+  quality?: ImageQuality
+}
+
+// 单个货号的生成结果
+export interface ErpGenerateItem {
+  batch_id: string
+  store_name: string
+  goods_sn: string
+  generation_task_id: number | null
+  success: boolean
+  message: string
+  /** 实际使用的模型（极端宽高比货号会自动切到 gemini） */
+  model: string | null
+}
+
+// 工厂自动化生成响应（每个货号一个批次）
+export interface ErpGenerateResponse {
+  results: ErpGenerateItem[]
+  succeeded: number
+  failed: number
+}
+
+// 用户自定义提取请求
+export interface ExtractGenerateRequest {
+  image_urls: string[]
+  prompt: string
+  size: string
+  resolution: string
+  prefix?: string
+  model?: ImageModelId
+  quality?: ImageQuality
+}
+
+// 上传结果（单条/批量通用）
+export interface ErpUploadResult {
+  order_item_id: number
+  store_name: string
+  goods_sn: string
+  success: boolean
+  message: string
+}
+
+export interface ErpUploadAllResponse {
+  results: ErpUploadResult[]
+  succeeded: number
+  failed: number
+}
+
+// ---------- 用户自定义提取历史 ----------
+
+export interface ExtractHistoryItem {
+  task_id: number
+  batch_id: string
+  status: string
+  model: string
+  quality: string | null
+  size: string
+  resolution: string
+  prompt: string | null
+  input_image_url: string | null
+  result_image_url: string | null
+  error_msg: string | null
+  created_at: string
+  completed_at: string | null
+  /** 生成任务进度 0-100（ToAPIs 同步） */
+  progress: number
+}
+
+export interface ExtractHistoryResponse {
+  items: ExtractHistoryItem[]
+  total: number
+}

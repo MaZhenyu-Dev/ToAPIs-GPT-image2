@@ -1,7 +1,13 @@
 import type { ComponentType, SVGProps } from 'react'
-import { IconFolder, IconLayers, IconRepeat, IconType } from '../components/ui/Icon'
+import {
+  IconFolder,
+  IconImage,
+  IconLayers,
+  IconRepeat,
+  IconType,
+} from '../components/ui/Icon'
 
-export type TabKey = 'generate' | 'product_swap' | 'title' | 'groups'
+export type TabKey = 'generate' | 'extract' | 'product_swap' | 'title' | 'groups'
 
 export interface TabMeta {
   key: TabKey
@@ -17,6 +23,12 @@ export const TAB_META: TabMeta[] = [
     label: '批量生成',
     description: '变体组批量 / 文件夹批量',
     icon: IconLayers,
+  },
+  {
+    key: 'extract',
+    label: '提取产品图',
+    description: '工厂自动化 / 用户自定义',
+    icon: IconImage,
   },
   {
     key: 'product_swap',

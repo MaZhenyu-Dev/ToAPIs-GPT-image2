@@ -12,7 +12,16 @@ export const SIZE_RESOLUTION_MAP: Record<string, Record<string, string>> = {
   '1:2': { '1k': '1024x2048', '2k': '1344x2688', '4k': '1920x3840' },
   '21:9': { '1k': '2016x864', '2k': '2688x1152', '4k': '3840x1648' },
   '9:21': { '1k': '864x2016', '2k': '1152x2688', '4k': '1648x3840' },
+  // 极端宽高比（仅 gemini-3.1-flash-image-preview 支持）
+  '4:1': { '1k': '2048x512', '2k': '4096x1024', '4k': '8192x2048' },
+  '1:4': { '1k': '512x2048', '2k': '1024x4096', '4k': '2048x8192' },
+  '8:1': { '1k': '4096x512', '2k': '8192x1024', '4k': '16384x2048' },
+  '1:8': { '1k': '512x4096', '2k': '1024x8192', '4k': '2048x16384' },
 }
+
+// 极端宽高比：自动切换到 gemini-3.1-flash-image-preview
+export const EXTREME_SIZES = new Set(['4:1', '1:4', '8:1', '1:8'])
+export const EXTREME_RATIO_MODEL = 'gemini-3.1-flash-image-preview'
 
 export const SIZE_OPTIONS = Object.keys(SIZE_RESOLUTION_MAP)
 export const DEFAULT_SIZE = '1:1'
@@ -37,7 +46,7 @@ export const IMAGE_MODEL_OPTIONS = [
   {
     id: 'gemini-3.1-flash-image-preview',
     label: 'Gemini 3.1 Flash Image Preview',
-    description: 'Nano banana 2 · 极端宽高比',
+    description: 'Nano banana 2 · 支持极端宽高比 4:1 / 8:1',
     qualitySupported: false,
   },
 ] as const
