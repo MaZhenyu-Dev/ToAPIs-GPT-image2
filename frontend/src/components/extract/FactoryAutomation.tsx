@@ -339,6 +339,29 @@ export default function FactoryAutomation() {
   const replaceTargetRef = useRef<ErpExtractUnit | null>(null)
   const [replacingKey, setReplacingKey] = useState<string | null>(null)
 
+  const loadHistory = useCallback(async (q: string) => {
+    setHistoryLoading(true)
+    try {
+      const result = await erpHistory(q)
+      setHistoryUnits(result.units)
+      setHistoryVisible(20)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '加载生成历史失败')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [toast])
+
+  // 按当前视图刷新数据源：历史视图重新加载历史（不依赖选中店铺），
+  // 待处理视图刷新单元列表
+  const refreshCurrentView = useCallback(async () => {
+    if (view === 'history') {
+      await loadHistory(historyQ)
+    } else {
+      await refreshUnits()
+    }
+  }, [view, loadHistory, historyQ, refreshUnits])
+
   const handleReplaceInputClick = (unit: ErpExtractUnit) => {
     replaceTargetRef.current = unit
     inputFileRef.current?.click()
@@ -347,9 +370,10 @@ export default function FactoryAutomation() {
   const handleInputFile = async (files: FileList | null) => {
     const unit = replaceTargetRef.current
     replaceTargetRef.current = null
-    if (inputFileRef.current) inputFileRef.current.value = ''
     if (!unit || !files || files.length === 0) return
+    // files 是 live FileList，必须先取 file 再清空 input，否则清空后 length 变 0
     const file = files[0]
+    if (inputFileRef.current) inputFileRef.current.value = ''
     if (!file.type.startsWith('image/')) {
       toast.warning('请选择图片文件')
       return
@@ -358,7 +382,7 @@ export default function FactoryAutomation() {
     try {
       const res = await uploadImage(file)
       await erpSetInputImage(unit.representative_order_item_id, res.url)
-      await refreshUnits()
+      await refreshCurrentView()
       toast.success(`已替换 ${unit.goods_sn} 的输入图`)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '替换输入图失败')
@@ -372,7 +396,7 @@ export default function FactoryAutomation() {
     setReplacingKey(unit.unit_key)
     try {
       await erpResetInputImage(unit.representative_order_item_id)
-      await refreshUnits()
+      await refreshCurrentView()
       toast.success(`已恢复 ${unit.goods_sn} 为工厂原图`)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '重置输入图失败')
@@ -480,19 +504,6 @@ export default function FactoryAutomation() {
       setRegeneratingTaskId(null)
     }
   }
-
-  const loadHistory = useCallback(async (q: string) => {
-    setHistoryLoading(true)
-    try {
-      const result = await erpHistory(q)
-      setHistoryUnits(result.units)
-      setHistoryVisible(20)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : '加载生成历史失败')
-    } finally {
-      setHistoryLoading(false)
-    }
-  }, [toast])
 
   useEffect(() => {
     if (view === 'history') {
