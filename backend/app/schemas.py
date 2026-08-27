@@ -778,8 +778,8 @@ class ErpSessionStatus(BaseModel):
     last_error: Optional[str] = None
 
 
-class ErpPreviewRequest(BaseModel):
-    """爬取预览请求：只关心店铺范围（与生成参数解耦）。"""
+class ErpOrdersSyncRequest(BaseModel):
+    """订单同步请求：只关心店铺范围（与生成参数解耦）。"""
 
     supplier_ids: list[int] = Field(..., min_length=1, max_length=50)
 
@@ -787,7 +787,7 @@ class ErpPreviewRequest(BaseModel):
 class ErpGenerateRequest(SizeResolutionMixin, ModelQualityMixin):
     """工厂自动化生成请求。
 
-    - supplier_ids: 用户选择的店铺 ID 列表（决定爬取范围）
+    - supplier_ids: 用户选择的店铺 ID 列表（决定同步范围）
     - unit_keys: 可选，只生成指定单元（"店铺名::货号"）；不传则生成全部待生成单元
     - prompt: 提取产品图的统一 prompt
     - size_mode: auto=按订单尺寸自动映射比例；fixed=全部用固定比例
@@ -926,6 +926,8 @@ class ErpExtractUnit(BaseModel):
     order_item_ids: list[int]
     representative_order_item_id: int
     input_image_url: str
+    # 工厂原始图（用户替换输入图后用于重置）
+    factory_image_url: Optional[str] = None
     size: str
     material: Optional[str] = None
     mapped_ratio: str = "1:1"
@@ -951,7 +953,7 @@ class ErpHistoryResponse(BaseModel):
 
 
 class ErpOrdersPreviewResponse(BaseModel):
-    """爬取 + 落库后的生成单元预览（前端渲染任务列表与"开始生成"按钮）。"""
+    """同步 + 落库后的生成单元预览（前端渲染任务列表与"开始生成"按钮）。"""
 
     supplier_ids: list[int]
     crawled_count: int = 0
@@ -960,6 +962,24 @@ class ErpOrdersPreviewResponse(BaseModel):
     @property
     def pending_count(self) -> int:
         return sum(1 for u in self.units if u.status == "pending")
+
+
+class ErpInputImageRequest(BaseModel):
+    """替换单元的输入图（自定义上传图，替代被家具遮挡的工厂图）。
+
+    仅校验 URL 合法性；生成时使用 input_image_url（替换后即自定义图）。
+    """
+
+    image_url: str = Field(..., min_length=1, max_length=500)
+
+    @field_validator("image_url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("image_url 必须以 http:// 或 https:// 开头")
+        if "," in v:
+            raise ValueError("image_url 不得含逗号（会破坏 CSV 切分）")
+        return v
 
 
 class ErpUploadRequest(BaseModel):

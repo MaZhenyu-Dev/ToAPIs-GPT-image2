@@ -27,7 +27,7 @@ export default function ExtractWorkspace() {
       >
         {(
           [
-            { key: 'factory', label: '工厂自动化', hint: '从工厂 ERP 爬取图片缺失订单 → 生成 → 上传回 ERP' },
+            { key: 'factory', label: '工厂自动化', hint: '从工厂 ERP 同步图片缺失订单 → 生成 → 上传回 ERP' },
             { key: 'custom', label: '用户自定义', hint: '手动传图 → 生成 → 自行下载 / 上传' },
           ] as const
         ).map((tab) => (

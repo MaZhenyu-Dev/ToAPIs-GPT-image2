@@ -1,4 +1,4 @@
-"""工厂 ERP（七彩ERP）路由：登录 / 会话 / 店铺 / 订单爬取 / 提取生成 / 上传回传。
+"""工厂 ERP（七彩ERP）路由：登录 / 会话 / 店铺与订单同步 / 提取生成 / 上传回传。
 
 依赖 erp_client（无状态性由 DB 持久化的 cookie 保证：每个请求前从
 erp_config 载入，会话过期返回 401 语义错误，前端提示重新登录）。
@@ -25,10 +25,11 @@ from backend.app.schemas import (
     ErpGenerateRequest,
     ErpGenerateResponse,
     ErpHistoryResponse,
+    ErpInputImageRequest,
     ErpLoginRequest,
     ErpLoginResponse,
     ErpOrdersPreviewResponse,
-    ErpPreviewRequest,
+    ErpOrdersSyncRequest,
     ErpSessionStatus,
     ErpStoreOut,
     ErpUploadAllRequest,
@@ -158,6 +159,7 @@ async def _build_units(db: AsyncSession, items: list[ErpOrderItem]) -> list[ErpE
                 order_item_ids=[m.order_item_id for m in members],
                 representative_order_item_id=rep.order_item_id,
                 input_image_url=rep.input_image_url or "",
+                factory_image_url=rep.factory_image_url,
                 size=rep.size or "",
                 material=rep.material,
                 mapped_ratio=map_size_to_ratio(rep.size or ""),
@@ -198,7 +200,7 @@ async def erp_login(request: ErpLoginRequest, db: AsyncSession = Depends(get_db)
 
 @router.get("/session", response_model=ErpSessionStatus)
 async def erp_session(db: AsyncSession = Depends(get_db)):
-    """探测 ERP 会话状态 + 已爬取店铺数量。"""
+    """探测 ERP 会话状态 + 已同步店铺数量。"""
     await _load_cookies(db)
     valid = False
     store_count = 0
@@ -216,7 +218,7 @@ async def erp_session(db: AsyncSession = Depends(get_db)):
 
 @router.get("/stores", response_model=list[ErpStoreOut])
 async def erp_stores(db: AsyncSession = Depends(get_db)):
-    """爬取店铺管理页全部店铺（依赖有效会话）。"""
+    """同步店铺管理页全部店铺（依赖有效会话）。"""
     await _require_session(db)
     try:
         stores = await erp_client.get_stores()
@@ -230,19 +232,19 @@ async def erp_stores(db: AsyncSession = Depends(get_db)):
 # ---------- 爬取 + 生成单元 ----------
 
 
-@router.post("/orders/preview", response_model=ErpOrdersPreviewResponse)
-async def erp_orders_preview(
-    request: ErpPreviewRequest, db: AsyncSession = Depends(get_db)
+@router.post("/orders/sync", response_model=ErpOrdersPreviewResponse)
+async def erp_orders_sync(
+    request: ErpOrdersSyncRequest, db: AsyncSession = Depends(get_db)
 ):
-    """爬取所选店铺的图片缺失订单并落库，返回去重后的生成单元列表。"""
+    """同步所选店铺的图片缺失订单并落库，返回去重后的生成单元列表。"""
     await _require_session(db)
     supplier_ids = request.supplier_ids
 
-    # 1) 爬店铺列表拿名字映射（订单行内不包含店铺 ID）
+    # 1) 同步店铺列表拿名字映射（订单行内不包含店铺 ID）
     try:
         stores = await erp_client.get_stores()
     except (ErpRequestError, ErpSessionError) as exc:
-        raise HTTPException(status_code=502, detail=f"爬取店铺列表失败: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"同步店铺列表失败: {exc}") from exc
     store_names = {s.id: s.name for s in stores}
     selected_names = [store_names.get(sid) for sid in supplier_ids]
     if any(not name for name in selected_names):
@@ -250,13 +252,13 @@ async def erp_orders_preview(
             status_code=400, detail="所选店铺 ID 不在 ERP 店铺列表中，请刷新店铺列表"
         )
 
-    # 2) 爬取图片缺失订单（按店铺过滤 + 自动翻页）
+    # 2) 同步图片缺失订单（按店铺过滤 + 自动翻页）
     try:
-        orders = await erp_client.get_image_missing_orders(supplier_ids, store_names)
+        orders = await erp_client.sync_image_missing_orders(supplier_ids, store_names)
     except ErpSessionError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except ErpRequestError as exc:
-        raise HTTPException(status_code=502, detail=f"爬取订单失败: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"同步订单失败: {exc}") from exc
 
     # 3) 落库（upsert；同店铺同货号多行共享一个生成单元）
     now = datetime.now(timezone.utc)
@@ -281,7 +283,7 @@ async def erp_orders_preview(
         )
     crawled = await erp_crud.upsert_order_items(db, rows, now)
 
-    # 4) 组装单元：只显示「本次爬取到」的订单（与 ERP 缺失列表同步）。
+    # 4) 组装单元：只显示「本次同步到」的订单（与 ERP 缺失列表保持一致）。
     #    已上传回 ERP 的订单已从缺失列表消失，不再展示在待处理视图，
     #    用户可在「生成历史」中找回。
     crawled_ids = {order.order_item_id for order in orders}
@@ -564,7 +566,7 @@ async def erp_history(
     q: str = "",
     db: AsyncSession = Depends(get_db),
 ):
-    """生成历史：查询本地持久化的全部订单单元（不依赖 ERP 爬取）。
+    """生成历史：查询本地持久化的全部订单单元（不依赖 ERP 同步）。
 
     已上传回 ERP 的订单会从 ERP 缺失列表消失，但本地记录永久保留，
     在此按时间倒序展示，支持货号/店铺名模糊搜索。
@@ -572,6 +574,46 @@ async def erp_history(
     items = await erp_crud.get_all_items(db, query=q or None)
     units = await _build_units(db, items)
     return ErpHistoryResponse(units=units, total=len(units))
+
+
+# ---------- 输入图替换（用户自定义图 / 重置回工厂图） ----------
+
+
+@router.post("/orders/{order_item_id}/input-image")
+async def erp_set_input_image(
+    order_item_id: int,
+    request: ErpInputImageRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """替换单元的输入图为自定义上传图（工厂图被家具遮挡时用清晰图）。
+
+    首次替换时固化 factory_image_url（工厂原始图），供「重置」恢复。
+    生成时使用 input_image_url，替换立即生效。
+    """
+    item = await db.get(ErpOrderItem, order_item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="订单记录不存在")
+    # 首次替换：固化工厂原始图
+    if not item.factory_image_url:
+        item.factory_image_url = item.input_image_url
+    item.input_image_url = request.image_url
+    await db.commit()
+    return {"success": True, "input_image_url": request.image_url}
+
+
+@router.post("/orders/{order_item_id}/input-image/reset")
+async def erp_reset_input_image(
+    order_item_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """重置输入图为工厂原始图（防误触，随时可恢复）。"""
+    item = await db.get(ErpOrderItem, order_item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="订单记录不存在")
+    if item.factory_image_url:
+        item.input_image_url = item.factory_image_url
+        await db.commit()
+    return {"success": True, "input_image_url": item.factory_image_url}
 
 
 # 供前端获取提取产品图 prompt 预设（客厅地毯 / 走廊地毯）

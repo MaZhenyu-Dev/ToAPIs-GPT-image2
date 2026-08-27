@@ -14,22 +14,39 @@ async def upsert_order_items(
 ) -> int:
     """批量 upsert 订单快照（按 order_item_id 主键），返回更新条数。
 
-    items 元素为 dict（字段名与模型列一致）。已存在的行只刷新爬取字段，
-    不清空 generation_task_id / erp_uploaded_at 等业务状态。
+    items 元素为 dict（字段名与模型列一致）。
+
+    输入图双轨制：
+    - ``input_image_url``：实际用于生成的输入图（默认=工厂图；用户可替换为
+      自定义上传图，解决工厂图被家具遮挡导致模型识别不准的问题）
+    - ``factory_image_url``：工厂原始图（同步时总是更新）
+
+    同步（upsert）时：工厂图总是刷新；已被用户替换过的输入图保持不变，
+    未替换过的输入图跟随工厂图更新。业务状态（generation_task_id /
+    erp_uploaded_at 等）从不被同步覆盖。
     """
     saved = 0
     for item in items:
         order_item_id = item["order_item_id"]
+        factory_url = item.get("input_image_url")
         existing = await db.get(ErpOrderItem, order_item_id)
         if existing:
             for key, value in item.items():
                 if key in ("order_item_id", "batch_id", "generation_task_id",
-                           "result_image_url", "erp_uploaded_at"):
+                           "result_image_url", "erp_uploaded_at",
+                           "input_image_url", "factory_image_url"):
                     continue
                 setattr(existing, key, value)
+            # 工厂图总是跟随最新同步结果
+            existing.factory_image_url = factory_url
+            # 输入图：已被用户替换（input != factory）则保留，否则跟随工厂图
+            if existing.input_image_url == existing.factory_image_url or not existing.input_image_url:
+                existing.input_image_url = factory_url
             existing.updated_at = now
         else:
-            db.add(ErpOrderItem(**item, created_at=now))
+            row = dict(item)
+            row["factory_image_url"] = factory_url
+            db.add(ErpOrderItem(**row, created_at=now))
         saved += 1
     await db.commit()
     return saved

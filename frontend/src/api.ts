@@ -410,11 +410,35 @@ export function erpListStores(): Promise<ErpStore[]> {
   return fetchJson<ErpStore[]>('/api/erp/stores')
 }
 
-export function erpOrdersPreview(supplierIds: number[]): Promise<ErpOrdersPreviewResponse> {
-  return fetchJson<ErpOrdersPreviewResponse>('/api/erp/orders/preview', {
+export function erpOrdersSync(supplierIds: number[]): Promise<ErpOrdersPreviewResponse> {
+  return fetchJson<ErpOrdersPreviewResponse>('/api/erp/orders/sync', {
     method: 'POST',
     body: JSON.stringify({ supplier_ids: supplierIds }),
   })
+}
+
+// 替换单元输入图为自定义上传图（工厂图被家具遮挡时用清晰图）
+export function erpSetInputImage(
+  orderItemId: number,
+  imageUrl: string
+): Promise<{ success: boolean; input_image_url: string }> {
+  return fetchJson<{ success: boolean; input_image_url: string }>(
+    `/api/erp/orders/${orderItemId}/input-image`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ image_url: imageUrl }),
+    }
+  )
+}
+
+// 重置输入图为工厂原始图
+export function erpResetInputImage(
+  orderItemId: number
+): Promise<{ success: boolean; input_image_url: string | null }> {
+  return fetchJson<{ success: boolean; input_image_url: string | null }>(
+    `/api/erp/orders/${orderItemId}/input-image/reset`,
+    { method: 'POST' }
+  )
 }
 
 export function erpGenerate(payload: ErpGenerateRequest): Promise<ErpGenerateResponse> {

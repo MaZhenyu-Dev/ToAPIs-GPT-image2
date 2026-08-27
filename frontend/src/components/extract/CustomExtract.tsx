@@ -58,6 +58,7 @@ function toPreviewUnit(
     order_item_ids: [],
     representative_order_item_id: taskId,
     input_image_url: input ?? '',
+    factory_image_url: null,
     size,
     material: null,
     mapped_ratio: size,

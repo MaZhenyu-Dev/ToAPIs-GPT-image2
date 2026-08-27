@@ -304,6 +304,8 @@ export interface ErpExtractUnit {
   order_item_ids: number[]
   representative_order_item_id: number
   input_image_url: string
+  /** 工厂原始图（用户替换输入图后用于重置） */
+  factory_image_url: string | null
   size: string
   material: string | null
   mapped_ratio: string
@@ -324,7 +326,7 @@ export interface ErpOrdersPreviewResponse {
   units: ErpExtractUnit[]
 }
 
-// 生成历史记录（持久化查询，不依赖 ERP 爬取）
+// 生成历史记录（持久化查询，不依赖 ERP 同步）
 export interface ErpHistoryResponse {
   units: ErpExtractUnit[]
   total: number

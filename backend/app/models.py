@@ -110,7 +110,7 @@ class ErpConfig(Base):
 class ErpOrderItem(Base):
     """工厂 ERP 图片缺失订单快照 + 提取产品图业务状态。
 
-    一次爬取把所选店铺的全部缺失订单落库（upsert 按 order_item_id）；
+    一次同步把所选店铺的全部缺失订单落库（upsert 按 order_item_id）；
     「店铺 + 货号」去重后的一个生成单元对应一个 generation_task（多行共享
     generation_task_id），生成图上传回 ERP 时对单元内每个 order_item_id 都提交。
 
@@ -130,6 +130,9 @@ class ErpOrderItem(Base):
     skuid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     material: Mapped[str | None] = mapped_column(String(255), nullable=True)
     input_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # 工厂原始图（ERP 同步时的默认输入图）。用户可把 input_image_url 替换为
+    # 自定义上传图（家具遮挡严重时换清晰图），随时可重置回本字段值。
+    factory_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     order_sn: Mapped[str | None] = mapped_column(String(64), nullable=True)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)

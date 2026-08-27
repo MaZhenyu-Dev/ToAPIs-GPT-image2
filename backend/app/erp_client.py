@@ -1,11 +1,11 @@
-"""七彩ERP（erp.funhan.cn）客户端：登录、会话探测、店铺/订单爬取、图片上传。
+"""七彩ERP（erp.funhan.cn）客户端：登录、会话探测、店铺/订单同步、图片上传。
 
 设计要点：
 - 所有请求复用同一个 httpx.AsyncClient（自带 cookie jar），cookies 从数据库
   erp_config 表加载 / 回写，会话过期后由调用方提示用户重新登录（不存密码）。
 - Yii2 应用：登录需先 GET 登录页拿 CSRF token（meta 标签），POST 时携带；
   所有 POST 请求统一附加 X-CSRF-Token 请求头（与 yii.js 行为一致）。
-- 爬取解析基于页面 class 约定（.kv-grid-table / .goods_sn / .order-sn 等），
+- 页面解析基于 class 约定（.kv-grid-table / .goods_sn / .order-sn 等），
   用 BeautifulSoup 解析，字段映射见 parse_* 函数。
 """
 
@@ -253,10 +253,10 @@ class ErpClient:
             return False
         return "店铺管理" in html
 
-    # ---------- 店铺列表爬取 ----------
+    # ---------- 店铺列表同步 ----------
 
     async def get_stores(self) -> list[ErpStore]:
-        """爬取店铺管理页全部店铺（分页循环直到无数据）。"""
+        """同步店铺管理页全部店铺（分页循环直到无数据）。"""
         stores: list[ErpStore] = []
         seen_ids: set[int] = set()
         page = 1
@@ -308,14 +308,14 @@ class ErpClient:
             stores.append(ErpStore(id=store_id, name=name))
         return stores
 
-    # ---------- 图片缺失订单爬取 ----------
+    # ---------- 图片缺失订单同步 ----------
 
-    async def get_image_missing_orders(
+    async def sync_image_missing_orders(
         self, supplier_ids: list[int], store_names: dict[int, str] | None = None
     ) -> list[ErpOrderItem]:
-        """爬取图片缺失订单（按店铺 ID 过滤，自动翻页）。
+        """同步图片缺失订单（按店铺 ID 过滤，自动翻页）。
 
-        ``store_names``: supplier_id → 店铺名称 映射（店铺列表爬取结果），
+        ``store_names``: supplier_id → 店铺名称 映射（店铺列表同步结果），
         用于把店铺名填充到订单条目（页面订单行内不直接给出店铺 ID）。
         """
         store_names = store_names or {}

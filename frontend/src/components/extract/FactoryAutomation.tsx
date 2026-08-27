@@ -5,13 +5,16 @@ import {
   erpListStores,
   erpLogin,
   erpOrdersList,
-  erpOrdersPreview,
+  erpOrdersSync,
   erpPrompts,
+  erpResetInputImage,
   erpSessionStatus,
+  erpSetInputImage,
   erpUploadAll,
   erpUploadOrder,
   regenerateTask,
   retryBatch,
+  uploadImage,
 } from '../../api'
 import {
   DEFAULT_IMAGE_MODEL,
@@ -52,7 +55,7 @@ const UNIT_STATUS_TEXT: Record<string, string> = {
 
 const POLL_INTERVAL_MS = 3000
 
-/** 工厂自动化：爬取 ERP 图片缺失订单 → AI 生成产品图 → 前后对比 → 上传回 ERP。
+/** 工厂自动化：同步 ERP 图片缺失订单 → AI 生成产品图 → 前后对比 → 上传回 ERP。
  *
  * 批次号 = 店铺名-货号（每个货号一个批次），不占用 {prefix}{MMDD}{seq} 序号；
  * 单元状态通过定时刷新 erpOrdersList 获取（后台轮询器已同步 ToAPIs 状态）。
@@ -181,20 +184,20 @@ export default function FactoryAutomation() {
     )
   }
 
-  // ---------- 爬取预览 ----------
-  const handlePreview = async () => {
+  // ---------- 订单同步 ----------
+  const handleSync = async () => {
     if (selectedSupplierIds.length === 0) {
       toast.warning('请先选择至少一个店铺')
       return
     }
     setPreviewLoading(true)
     try {
-      const result = await erpOrdersPreview(selectedSupplierIds)
+      const result = await erpOrdersSync(selectedSupplierIds)
       setUnits(result.units)
       setSizeOverrides({})
-      toast.success(`已爬取 ${result.crawled_count} 条订单，去重后 ${result.units.length} 个货号`)
+      toast.success(`已同步 ${result.crawled_count} 条订单，去重后 ${result.units.length} 个货号`)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '爬取订单失败')
+      toast.error(err instanceof Error ? err.message : '同步订单失败')
       handleSessionError(err)
     } finally {
       setPreviewLoading(false)
@@ -331,6 +334,54 @@ export default function FactoryAutomation() {
     }
   }, [])
 
+  // ---------- 输入图替换 / 重置（工厂图被家具遮挡时换自定义清晰图） ----------
+  const inputFileRef = useRef<HTMLInputElement>(null)
+  const replaceTargetRef = useRef<ErpExtractUnit | null>(null)
+  const [replacingKey, setReplacingKey] = useState<string | null>(null)
+
+  const handleReplaceInputClick = (unit: ErpExtractUnit) => {
+    replaceTargetRef.current = unit
+    inputFileRef.current?.click()
+  }
+
+  const handleInputFile = async (files: FileList | null) => {
+    const unit = replaceTargetRef.current
+    replaceTargetRef.current = null
+    if (inputFileRef.current) inputFileRef.current.value = ''
+    if (!unit || !files || files.length === 0) return
+    const file = files[0]
+    if (!file.type.startsWith('image/')) {
+      toast.warning('请选择图片文件')
+      return
+    }
+    setReplacingKey(unit.unit_key)
+    try {
+      const res = await uploadImage(file)
+      await erpSetInputImage(unit.representative_order_item_id, res.url)
+      await refreshUnits()
+      toast.success(`已替换 ${unit.goods_sn} 的输入图`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '替换输入图失败')
+      handleSessionError(err)
+    } finally {
+      setReplacingKey(null)
+    }
+  }
+
+  const handleResetInput = async (unit: ErpExtractUnit) => {
+    setReplacingKey(unit.unit_key)
+    try {
+      await erpResetInputImage(unit.representative_order_item_id)
+      await refreshUnits()
+      toast.success(`已恢复 ${unit.goods_sn} 为工厂原图`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '重置输入图失败')
+      handleSessionError(err)
+    } finally {
+      setReplacingKey(null)
+    }
+  }
+
   // ---------- 上传 ----------
   const handleUploadUnit = async (unit: ErpExtractUnit) => {
     const ok = await confirm({
@@ -460,7 +511,7 @@ export default function FactoryAutomation() {
     <>
       <PageHeader
         title="工厂自动化"
-        description="从工厂 ERP 爬取「图片缺失」订单 → AI 生成产品图 → 前后对比 → 上传回 ERP。批次号即「店铺名-货号」。"
+        description="从工厂 ERP 同步「图片缺失」订单 → AI 生成产品图 → 前后对比 → 上传回 ERP。批次号即「店铺名-货号」。"
       />
 
       {/* 视图切换：待处理 / 生成历史 */}
@@ -480,7 +531,7 @@ export default function FactoryAutomation() {
       >
         {(
           [
-            { key: 'pending', label: '待处理订单', hint: '爬取 ERP 图片缺失订单并生成' },
+            { key: 'pending', label: '待处理订单', hint: '同步 ERP 图片缺失订单并生成' },
             { key: 'history', label: '生成历史', hint: '本地持久化记录（含已上传 ERP 后消失的订单）' },
           ] as const
         ).map((tab) => (
@@ -717,11 +768,11 @@ export default function FactoryAutomation() {
       <div className="config-actions">
         <GlassButton
           variant="secondary"
-          onClick={() => void handlePreview()}
+          onClick={() => void handleSync()}
           loading={previewLoading}
           disabled={!session?.valid || selectedSupplierIds.length === 0 || !isOnline}
         >
-          爬取订单预览
+          同步订单
         </GlassButton>
         <GlassButton
           variant="primary"
@@ -735,7 +786,7 @@ export default function FactoryAutomation() {
           }
         >
           {pendingUnits.length === 0
-            ? '请先爬取订单'
+            ? '请先同步订单'
             : `为 ${pendingUnits.length} 个货号生成 ${pendingUnits.length} 张图片`}
         </GlassButton>
         <GlassButton
@@ -791,6 +842,9 @@ export default function FactoryAutomation() {
                 onUpload={() => void handleUploadUnit(unit)}
                 onRetry={() => void handleRetryUnit(unit)}
                 onPreview={() => setPreviewUnit(unit)}
+                onReplaceInput={() => handleReplaceInputClick(unit)}
+                onResetInput={() => void handleResetInput(unit)}
+                replacingInput={replacingKey === unit.unit_key}
                 onRegenerate={() => {
                   if (!unit.batch_id || !unit.generation_task_id) return
                   setRegenerateTarget({
@@ -877,6 +931,9 @@ export default function FactoryAutomation() {
                     onUpload={() => void handleUploadUnit(unit)}
                     onRetry={() => void handleRetryUnit(unit)}
                     onPreview={() => setPreviewUnit(unit)}
+                    onReplaceInput={() => handleReplaceInputClick(unit)}
+                    onResetInput={() => void handleResetInput(unit)}
+                    replacingInput={replacingKey === unit.unit_key}
                     onRegenerate={() => {
                       if (!unit.batch_id || !unit.generation_task_id) return
                       setRegenerateTarget({
@@ -917,6 +974,16 @@ export default function FactoryAutomation() {
 
       {/* 对比预览：输入图（工厂）⇄ 生成图（平台）双图同屏，各自可缩放 */}
       <ComparePreview unit={previewUnit} onClose={() => setPreviewUnit(null)} />
+
+      {/* 替换输入图用的隐藏文件选择器（共享，配合 replaceTargetRef） */}
+      <input
+        ref={inputFileRef}
+        type="file"
+        accept="image/*"
+        style={{ display: 'none' }}
+        onChange={(e) => void handleInputFile(e.target.files)}
+        aria-label="选择自定义输入图"
+      />
     </>
   )
 }
@@ -932,6 +999,9 @@ function UnitRow({
   onUpload,
   onRetry,
   onPreview,
+  onReplaceInput,
+  onResetInput,
+  replacingInput,
   onRegenerate,
   regenerating,
   showTime = false,
@@ -946,6 +1016,9 @@ function UnitRow({
   onUpload: () => void
   onRetry: () => void
   onPreview: () => void
+  onReplaceInput: () => void
+  onResetInput: () => void
+  replacingInput: boolean
   onRegenerate: () => void
   regenerating: boolean
   showTime?: boolean
@@ -961,6 +1034,9 @@ function UnitRow({
           : unit.status === 'generating'
             ? 'var(--warning)'
             : 'var(--text-3)'
+  // 输入图是否被用户替换过（非工厂原图 → 显示"重置工厂图"）
+  const inputOverridden =
+    !!unit.factory_image_url && unit.input_image_url !== unit.factory_image_url
 
   return (
     <div
@@ -977,12 +1053,36 @@ function UnitRow({
     >
       {/* 左：对比图区（输入图 ⇄ 生成图，点击放大对比） */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-4)', minWidth: 0 }}>
-        <CompareThumb
-          url={unit.input_image_url}
-          label="输入图 · 工厂"
-          onClick={onPreview}
-          enabled={!!unit.input_image_url}
-        />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem' }}>
+          <CompareThumb
+            url={unit.input_image_url}
+            label="输入图"
+            onClick={onPreview}
+            enabled={!!unit.input_image_url}
+          />
+          <div style={{ display: 'flex', gap: '0.3rem' }}>
+            <GlassButton
+              size="sm"
+              variant="ghost"
+              onClick={onReplaceInput}
+              loading={replacingInput}
+              title="上传自定义图替换输入图（工厂图被家具遮挡时用清晰图）"
+            >
+              替换
+            </GlassButton>
+            {inputOverridden && (
+              <GlassButton
+                size="sm"
+                variant="ghost"
+                onClick={onResetInput}
+                disabled={replacingInput}
+                title="恢复为工厂原始图"
+              >
+                重置工厂图
+              </GlassButton>
+            )}
+          </div>
+        </div>
         <div
           style={{
             display: 'grid',
@@ -1091,7 +1191,7 @@ function UnitRow({
             {showTime && (
               <span className="hint" style={{ fontSize: '0.72rem' }}>
                 {unit.created_at
-                  ? `爬取 ${new Date(unit.created_at).toLocaleString()}`
+                  ? `同步 ${new Date(unit.created_at).toLocaleString()}`
                   : ''}
                 {unit.erp_uploaded_at
                   ? ` · 已上传 ${new Date(unit.erp_uploaded_at).toLocaleString()}`

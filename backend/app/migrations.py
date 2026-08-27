@@ -33,6 +33,12 @@ REQUIRED_COLUMNS: dict[str, dict[str, str]] = {
             "失败后按模型阶梯自动重试；3 次后停止交由用户手动重试）'"
         ),
     },
+    "erp_order_items": {
+        "factory_image_url": (
+            "VARCHAR(500) NULL COMMENT '工厂原始图（用户可替换 input_image_url "
+            "为自定义图，随时可重置回此值）'"
+        ),
+    },
 }
 
 
