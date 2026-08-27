@@ -125,6 +125,12 @@ export const MAX_I2I_MULTI_COUNT = 300
 // 与 Windows 资源管理器默认排序一致）后取前 N 张
 export const I2I_MULTI_IMAGE_EXTS = ['png', 'jpg', 'jpeg'] as const
 
+// ---------- 白边裁剪（提取产品图） ----------
+
+// 像素与纯白 (255,255,255) 的欧氏距离 <= 阈值即视为白边（0-255，越大越激进）
+export const DEFAULT_CROP_THRESHOLD = 10
+export const CROP_THRESHOLD_MAX = 255
+
 // ---------- 标题生成 ----------
 
 // 支持的多模态模型清单（与后端 SUPPORTED_TITLE_MODELS 对齐）

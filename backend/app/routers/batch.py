@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import json
+
 from backend.app.crud.generation_tasks import (
     count_batches_in_batches,
     count_today_batches,
@@ -187,6 +189,12 @@ async def regenerate_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     # ORM 模型上无 variant_prompt 字段，需要从 variant 关系取值后手动构造响应
     # 与 task_poller._build_response 的处理方式保持一致
+    crop_meta = None
+    if task.crop_meta:
+        try:
+            crop_meta = json.loads(task.crop_meta)
+        except (ValueError, TypeError):
+            crop_meta = None
     return GenerationTaskOut(
         id=task.id,
         batch_id=task.batch_id,
@@ -207,6 +215,10 @@ async def regenerate_task(
         prompt=task.prompt,
         created_at=task.created_at,
         completed_at=task.completed_at,
+        crop_enabled=task.crop_enabled,
+        crop_threshold=task.crop_threshold,
+        crop_image_url=task.crop_image_url,
+        crop_meta=crop_meta,
     )
 
 

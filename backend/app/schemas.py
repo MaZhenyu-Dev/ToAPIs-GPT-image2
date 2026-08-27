@@ -422,6 +422,11 @@ class GenerationTaskOut(BaseModel):
     prompt: Optional[str] = None
     created_at: datetime
     completed_at: Optional[datetime]
+    # 白边裁剪（extract 模式填充；t2i/i2i 等模式为 None）
+    crop_enabled: Optional[bool] = None
+    crop_threshold: Optional[int] = None
+    crop_image_url: Optional[str] = None
+    crop_meta: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -852,9 +857,14 @@ class ExtractHistoryItem(BaseModel):
     result_image_url: Optional[str] = None
     error_msg: Optional[str] = None
     created_at: datetime
-    completed_at: Optional[datetime] = None
+    completed_at: Optional[datetime]
     # 生成任务进度 0-100（ToAPIs 同步）
     progress: int = 0
+    # 白边裁剪（配置快照 + 结果）
+    crop_enabled: bool = True
+    crop_threshold: int = 10
+    crop_image_url: Optional[str] = None
+    crop_meta: Optional[dict] = None
 
 
 class ExtractHistoryResponse(BaseModel):
@@ -880,6 +890,11 @@ class ExtractGenerateRequest(SizeResolutionMixin, ModelQualityMixin):
     )
     prompt: str = Field(..., min_length=1, max_length=32000)
     prefix: str = Field(default="MZY", description="批次号前缀，仅允许 A-Z / 0-9")
+    # 白边裁剪（本批次统一配置，快照到每个任务）
+    crop_enabled: bool = True
+    crop_threshold: int = Field(
+        default=10, ge=0, le=255, description="与纯白欧氏距离阈值（0-255）"
+    )
 
     @field_validator("prefix")
     @classmethod
@@ -940,6 +955,11 @@ class ErpExtractUnit(BaseModel):
     erp_uploaded_at: Optional[datetime] = None
     # 生成任务进度 0-100（ToAPIs 同步，展示在输出图加载动画上）
     progress: int = 0
+    # 白边裁剪：crop_enabled/threshold 为单元当前配置；结果为任务快照
+    crop_enabled: bool = True
+    crop_threshold: int = 10
+    crop_image_url: Optional[str] = None
+    crop_meta: Optional[dict] = None
 
 
 class ErpHistoryResponse(BaseModel):
@@ -1011,6 +1031,24 @@ class ErpUploadAllResponse(BaseModel):
     results: list[ErpUploadResult]
     succeeded: int = 0
     failed: int = 0
+
+
+class CropConfigRequest(BaseModel):
+    """白边裁剪配置：开关 + 阈值（0-255，与纯白欧氏距离）。"""
+
+    enabled: bool = True
+    threshold: int = Field(default=10, ge=0, le=255)
+
+
+class CropConfigResponse(BaseModel):
+    """裁剪配置保存结果（前端据此刷新显示）。"""
+
+    success: bool = True
+    crop_enabled: bool = True
+    crop_threshold: int = 10
+    # 已保存的裁剪结果（enabled 且存在时返回，供前端立即切换显示）
+    crop_image_url: Optional[str] = None
+    crop_meta: Optional[dict] = None
 
 
 ErpLoginResponse.model_rebuild()

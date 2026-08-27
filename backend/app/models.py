@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -83,6 +83,13 @@ class GenerationTask(Base):
     # （gpt-image-2 → gpt-image-2-vip/medium → gemini-3.1-flash-image-preview）。
     # 与 retried_count 语义分离（那是用户手动重试计数，列表"重试过"标记依赖它）。
     auto_retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # 白边裁剪：生成时的配置快照（crop_enabled/crop_threshold）+ 裁剪结果
+    crop_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    crop_threshold: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    # 裁剪后图片 URL（无白边时为原图 URL；未启用/失败为 NULL）
+    crop_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # 裁剪统计 JSON：{orig_w,orig_h,crop_w,crop_h,orig_size,crop_size,threshold,area_pct,error?}
+    crop_meta: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -143,6 +150,10 @@ class ErpOrderItem(Base):
     erp_uploaded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # 白边裁剪配置（单元级）：生成时快照到 generation_tasks，同步 upsert 不覆盖
+    crop_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # 与纯白欧氏距离 <= 阈值即视为白边（0-255，越大越激进）
+    crop_threshold: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

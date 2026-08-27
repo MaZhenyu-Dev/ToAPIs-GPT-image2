@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,6 +80,11 @@ class TaskPollerService:
                     image_url=image_url,
                     error_msg=error_msg,
                 )
+                # 生成完成 → 后台自动裁剪白边（启用时）
+                if new_status == "completed" and image_url:
+                    from backend.app.services.crop_service import schedule_crop
+
+                    schedule_crop(fresh_task.id)
                 if new_status == "failed":
                     # 失败后自动重试（模型阶梯；3 次后停止交由用户手动重试）
                     await batch_generator.maybe_auto_retry(session, fresh_task)
@@ -96,6 +102,12 @@ class TaskPollerService:
         task_outs: list[GenerationTaskOut] = []
         for task in tasks:
             counts[task.status] = counts.get(task.status, 0) + 1
+            crop_meta = None
+            if task.crop_meta:
+                try:
+                    crop_meta = json.loads(task.crop_meta)
+                except (ValueError, TypeError):
+                    crop_meta = None
             task_outs.append(
                 GenerationTaskOut(
                     id=task.id,
@@ -117,6 +129,10 @@ class TaskPollerService:
                     prompt=task.prompt,
                     created_at=task.created_at,
                     completed_at=task.completed_at,
+                    crop_enabled=task.crop_enabled,
+                    crop_threshold=task.crop_threshold,
+                    crop_image_url=task.crop_image_url,
+                    crop_meta=crop_meta,
                 )
             )
 

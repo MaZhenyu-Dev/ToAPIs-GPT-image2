@@ -110,6 +110,11 @@ export interface GenerationTaskItem {
   prompt: string | null
   created_at: string
   completed_at: string | null
+  // 白边裁剪（extract 模式返回；其他模式为 null/undefined）
+  crop_enabled?: boolean | null
+  crop_threshold?: number | null
+  crop_image_url?: string | null
+  crop_meta?: CropMeta | null
 }
 
 export interface BatchStatusResponse {
@@ -282,6 +287,36 @@ export interface TitlePromptsResponse {
 
 // ---------- 提取产品图（工厂 ERP / 用户自定义） ----------
 
+// 白边裁剪统计（后端 crop_meta JSON）
+export interface CropMeta {
+  orig_w: number
+  orig_h: number
+  crop_w: number
+  crop_h: number
+  orig_size: number
+  crop_size: number
+  /** 与纯白欧氏距离阈值 */
+  threshold: number
+  /** 裁掉面积百分比 0-100 */
+  area_pct: number
+  /** 裁剪失败原因（有值表示降级为原图） */
+  error?: string
+}
+
+// 白边裁剪配置请求（开关 + 阈值）
+export interface CropConfigRequest {
+  enabled: boolean
+  threshold: number
+}
+
+export interface CropConfigResponse {
+  success: boolean
+  crop_enabled: boolean
+  crop_threshold: number
+  crop_image_url: string | null
+  crop_meta: CropMeta | null
+}
+
 // 工厂 ERP 店铺
 export interface ErpStore {
   id: number
@@ -318,6 +353,11 @@ export interface ErpExtractUnit {
   erp_uploaded_at: string | null
   /** 生成任务进度 0-100（ToAPIs 同步） */
   progress: number
+  /** 白边裁剪：配置（单元级）+ 结果（任务级） */
+  crop_enabled: boolean
+  crop_threshold: number
+  crop_image_url: string | null
+  crop_meta: CropMeta | null
 }
 
 export interface ErpOrdersPreviewResponse {
@@ -375,6 +415,9 @@ export interface ExtractGenerateRequest {
   prefix?: string
   model?: ImageModelId
   quality?: ImageQuality
+  /** 白边裁剪（本批次统一配置） */
+  crop_enabled?: boolean
+  crop_threshold?: number
 }
 
 // 上传结果（单条/批量通用）
@@ -410,6 +453,11 @@ export interface ExtractHistoryItem {
   completed_at: string | null
   /** 生成任务进度 0-100（ToAPIs 同步） */
   progress: number
+  /** 白边裁剪：配置快照 + 结果 */
+  crop_enabled: boolean
+  crop_threshold: number
+  crop_image_url: string | null
+  crop_meta: CropMeta | null
 }
 
 export interface ExtractHistoryResponse {

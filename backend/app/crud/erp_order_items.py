@@ -34,7 +34,8 @@ async def upsert_order_items(
             for key, value in item.items():
                 if key in ("order_item_id", "batch_id", "generation_task_id",
                            "result_image_url", "erp_uploaded_at",
-                           "input_image_url", "factory_image_url"):
+                           "input_image_url", "factory_image_url",
+                           "crop_enabled", "crop_threshold"):
                     continue
                 setattr(existing, key, value)
             # 工厂图总是跟随最新同步结果

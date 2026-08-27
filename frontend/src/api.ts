@@ -5,6 +5,7 @@ import type {
   BatchListResponse,
   BatchRetryResponse,
   BatchStatusResponse,
+  CropConfigResponse,
   ErpExtractUnit,
   ErpGenerateRequest,
   ErpGenerateResponse,
@@ -439,6 +440,40 @@ export function erpResetInputImage(
     `/api/erp/orders/${orderItemId}/input-image/reset`,
     { method: 'POST' }
   )
+}
+
+// 设置单元的白边裁剪开关 / 阈值（生成前可改，改后即时生效）
+export function erpSetCropConfig(
+  orderItemId: number,
+  enabled: boolean,
+  threshold: number
+): Promise<CropConfigResponse> {
+  return fetchJson<CropConfigResponse>(
+    `/api/erp/orders/${orderItemId}/crop-config`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ enabled, threshold }),
+    }
+  )
+}
+
+// 设置任务的白边裁剪开关 / 阈值（用户自定义历史等按任务操作）
+export function taskSetCropConfig(
+  taskId: number,
+  enabled: boolean,
+  threshold: number
+): Promise<CropConfigResponse> {
+  return fetchJson<CropConfigResponse>(`/api/tasks/${taskId}/crop-config`, {
+    method: 'POST',
+    body: JSON.stringify({ enabled, threshold }),
+  })
+}
+
+// 立即重新计算任务的裁剪图（改阈值后手动触发，同步等待结果）
+export function taskRecomputeCrop(taskId: number): Promise<CropConfigResponse> {
+  return fetchJson<CropConfigResponse>(`/api/tasks/${taskId}/crop/recompute`, {
+    method: 'POST',
+  })
 }
 
 export function erpGenerate(payload: ErpGenerateRequest): Promise<ErpGenerateResponse> {

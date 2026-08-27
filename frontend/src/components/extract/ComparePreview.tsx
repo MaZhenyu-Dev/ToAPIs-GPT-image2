@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { IconMaximize, IconX, IconZoomIn, IconZoomOut } from '../ui/Icon'
+import { formatCropSummary } from '../../lib/cropFormat'
 import type { ErpExtractUnit } from '../../types'
 
 const MIN_SCALE = 1
@@ -38,6 +39,14 @@ export default function ComparePreview({
   }, [unit, onClose])
 
   if (!unit) return null
+
+  // 白边裁剪：开启且有裁剪结果 → 展示裁剪图；统计信息条随 meta 渲染
+  const resultUrl =
+    unit.crop_enabled && unit.crop_image_url
+      ? unit.crop_image_url
+      : unit.result_image_url
+  const resultNote =
+    unit.crop_enabled && unit.crop_meta ? formatCropSummary(unit.crop_meta) : null
 
   return createPortal(
     <div className="lightbox-overlay" onClick={onClose}>
@@ -96,7 +105,7 @@ export default function ComparePreview({
         >
           ⇄
         </div>
-        <ComparePane key={`result-${unit.unit_key}`} url={unit.result_image_url} label="生成图 · 平台" />
+        <ComparePane key={`result-${unit.unit_key}`} url={resultUrl} label="生成图 · 平台" note={resultNote} />
       </div>
 
       {/* 底部操作提示 */}
@@ -120,7 +129,15 @@ export default function ComparePreview({
 }
 
 /** 单张图的缩放/拖拽面板 */
-function ComparePane({ url, label }: { url: string | null; label: string }) {
+function ComparePane({
+  url,
+  label,
+  note,
+}: {
+  url: string | null
+  label: string
+  note?: string | null
+}) {
   const [scale, setScale] = useState(1)
   const [translate, setTranslate] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
@@ -326,6 +343,23 @@ function ComparePane({ url, label }: { url: string | null; label: string }) {
         >
           {Math.round(scale * 100)}%
         </span>
+        {note && (
+          <span
+            style={{
+              color: 'rgba(255,255,255,0.65)',
+              fontSize: '0.72rem',
+              fontVariantNumeric: 'tabular-nums',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: '46%',
+              marginLeft: '8px',
+            }}
+            title={note}
+          >
+            {note}
+          </span>
+        )}
       </div>
     </div>
   )

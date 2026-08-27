@@ -11,6 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import json
+
 from backend.app.database import get_db
 from backend.app.models import GenerationTask
 from backend.app.schemas import (
@@ -56,6 +58,9 @@ async def extract_generate(
     # 把任务标记为用户自定义模式（区别于工厂自动化的 extract）
     for task in tasks:
         task.mode = "extract_custom"
+        # 白边裁剪配置快照（本批次统一，生成完成后自动裁剪）
+        task.crop_enabled = request.crop_enabled
+        task.crop_threshold = request.crop_threshold
     await db.commit()
     return BatchGenerateResponse(batch_id=batch_id, task_count=len(tasks))
 
@@ -82,6 +87,12 @@ async def extract_history(
         input_url = None
         if task.reference_image_urls:
             input_url = task.reference_image_urls.split(",")[0].strip() or None
+        crop_meta = None
+        if task.crop_meta:
+            try:
+                crop_meta = json.loads(task.crop_meta)
+            except (ValueError, TypeError):
+                crop_meta = None
         items.append(
             ExtractHistoryItem(
                 task_id=task.id,
@@ -98,6 +109,10 @@ async def extract_history(
                 created_at=task.created_at,
                 completed_at=task.completed_at,
                 progress=task.progress,
+                crop_enabled=task.crop_enabled if task.crop_enabled is not None else True,
+                crop_threshold=task.crop_threshold or 10,
+                crop_image_url=task.crop_image_url,
+                crop_meta=crop_meta,
             )
         )
 

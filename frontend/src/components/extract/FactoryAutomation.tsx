@@ -9,11 +9,13 @@ import {
   erpPrompts,
   erpResetInputImage,
   erpSessionStatus,
+  erpSetCropConfig,
   erpSetInputImage,
   erpUploadAll,
   erpUploadOrder,
   regenerateTask,
   retryBatch,
+  taskRecomputeCrop,
   uploadImage,
 } from '../../api'
 import {
@@ -36,7 +38,9 @@ import type {
 import { useConfirm } from '../ui/ConfirmDialog'
 import FadeInImage from '../ui/FadeInImage'
 import GlassButton from '../ui/GlassButton'
+import { formatCropSummary } from '../../lib/cropFormat'
 import ComparePreview from './ComparePreview'
+import CropToggle from './CropToggle'
 import ExtractPromptSelector from './ExtractPromptSelector'
 import ModelSelector from './ModelSelector'
 import PageHeader from '../ui/PageHeader'
@@ -403,6 +407,43 @@ export default function FactoryAutomation() {
       handleSessionError(err)
     } finally {
       setReplacingKey(null)
+    }
+  }
+
+  // ---------- 白边裁剪配置（单元级：开关 + 阈值，改后即时生效） ----------
+  const [cropSavingKey, setCropSavingKey] = useState<string | null>(null)
+
+  const handleCropConfig = async (
+    unit: ErpExtractUnit,
+    enabled: boolean,
+    threshold: number
+  ) => {
+    setCropSavingKey(unit.unit_key)
+    try {
+      const res = await erpSetCropConfig(
+        unit.representative_order_item_id,
+        enabled,
+        threshold
+      )
+      // 开启且任务已完成但没有裁剪结果 → 立即补算（同步等结果，体验完整）
+      if (enabled && !res.crop_image_url && unit.generation_task_id) {
+        try {
+          await taskRecomputeCrop(unit.generation_task_id)
+        } catch {
+          /* 补算失败静默：列表刷新后显示裁剪失败状态 */
+        }
+      }
+      await refreshCurrentView()
+      toast.success(
+        enabled
+          ? `已开启 ${unit.goods_sn} 的白边裁剪（阈值 ${threshold}）`
+          : `已关闭 ${unit.goods_sn} 的白边裁剪`
+      )
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '保存裁剪配置失败')
+      handleSessionError(err)
+    } finally {
+      setCropSavingKey(null)
     }
   }
 
@@ -856,6 +897,10 @@ export default function FactoryAutomation() {
                 onReplaceInput={() => handleReplaceInputClick(unit)}
                 onResetInput={() => void handleResetInput(unit)}
                 replacingInput={replacingKey === unit.unit_key}
+                cropSaving={cropSavingKey === unit.unit_key}
+                onCropConfig={(enabled, threshold) =>
+                  void handleCropConfig(unit, enabled, threshold)
+                }
                 onRegenerate={() => {
                   if (!unit.batch_id || !unit.generation_task_id) return
                   setRegenerateTarget({
@@ -945,6 +990,10 @@ export default function FactoryAutomation() {
                     onReplaceInput={() => handleReplaceInputClick(unit)}
                     onResetInput={() => void handleResetInput(unit)}
                     replacingInput={replacingKey === unit.unit_key}
+                    cropSaving={cropSavingKey === unit.unit_key}
+                    onCropConfig={(enabled, threshold) =>
+                      void handleCropConfig(unit, enabled, threshold)
+                    }
                     onRegenerate={() => {
                       if (!unit.batch_id || !unit.generation_task_id) return
                       setRegenerateTarget({
@@ -1013,6 +1062,8 @@ function UnitRow({
   onReplaceInput,
   onResetInput,
   replacingInput,
+  cropSaving,
+  onCropConfig,
   onRegenerate,
   regenerating,
   showTime = false,
@@ -1030,6 +1081,8 @@ function UnitRow({
   onReplaceInput: () => void
   onResetInput: () => void
   replacingInput: boolean
+  cropSaving: boolean
+  onCropConfig: (enabled: boolean, threshold: number) => void
   onRegenerate: () => void
   regenerating: boolean
   showTime?: boolean
@@ -1048,6 +1101,15 @@ function UnitRow({
   // 输入图是否被用户替换过（非工厂原图 → 显示"重置工厂图"）
   const inputOverridden =
     !!unit.factory_image_url && unit.input_image_url !== unit.factory_image_url
+  // 白边裁剪：开启且有裁剪结果 → 显示裁剪图；否则显示 AI 原图
+  const displayResultUrl =
+    unit.crop_enabled && unit.crop_image_url
+      ? unit.crop_image_url
+      : unit.result_image_url
+  const cropSummary =
+    unit.crop_enabled && unit.crop_meta && !unit.crop_meta.error
+      ? formatCropSummary(unit.crop_meta)
+      : null
 
   return (
     <div
@@ -1112,10 +1174,10 @@ function UnitRow({
           ⇄
         </div>
         <CompareThumb
-          url={unit.result_image_url}
+          url={displayResultUrl}
           label="生成图 · 平台"
           onClick={onPreview}
-          enabled={!!unit.result_image_url}
+          enabled={!!displayResultUrl}
           placeholder={unit.status === 'pending' ? '未生成' : undefined}
           loading={unit.status === 'generating'}
           progress={unit.progress}
@@ -1161,6 +1223,12 @@ function UnitRow({
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+            <CropToggle
+              enabled={unit.crop_enabled}
+              threshold={unit.crop_threshold}
+              saving={cropSaving}
+              onSave={(enabled, threshold) => onCropConfig(enabled, threshold)}
+            />
             {unit.status === 'pending' && sizeMode === 'auto' && (
               <label
                 style={{
@@ -1210,6 +1278,32 @@ function UnitRow({
               </span>
             )}
           </div>
+          {cropSummary && (
+            <div className="hint" style={{ marginTop: '0.25rem', color: 'var(--text-3)' }}>
+              {cropSummary}
+            </div>
+          )}
+          {unit.crop_enabled && unit.crop_meta?.error && (
+            <div
+              className="hint"
+              style={{ marginTop: '0.25rem', color: 'var(--danger)' }}
+              title={unit.crop_meta.error}
+            >
+              裁剪失败，上传将回退原图
+            </div>
+          )}
+          {unit.crop_enabled &&
+            !unit.crop_meta &&
+            unit.result_image_url &&
+            unit.status === 'completed' && (
+              <div
+                className="hint"
+                style={{ marginTop: '0.25rem', color: 'var(--warning)' }}
+                title="切换开关或调整阈值后自动计算裁剪结果"
+              >
+                尚未裁剪
+              </div>
+            )}
         </div>
       </div>
 

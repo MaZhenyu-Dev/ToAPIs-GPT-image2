@@ -32,11 +32,29 @@ REQUIRED_COLUMNS: dict[str, dict[str, str]] = {
             "INT NOT NULL DEFAULT 0 COMMENT '自动重试已执行次数（0-3，"
             "失败后按模型阶梯自动重试；3 次后停止交由用户手动重试）'"
         ),
+        "crop_enabled": (
+            "TINYINT(1) NOT NULL DEFAULT 1 COMMENT '白边裁剪开关（生成时快照）'"
+        ),
+        "crop_threshold": (
+            "INT NOT NULL DEFAULT 10 COMMENT '白边判定阈值（与纯白欧氏距离，0-255）'"
+        ),
+        "crop_image_url": (
+            "VARCHAR(500) NULL COMMENT '裁剪后图片 URL（无白边时为原图 URL）'"
+        ),
+        "crop_meta": (
+            "TEXT NULL COMMENT '裁剪统计 JSON（尺寸/字节/裁掉面积百分比）'"
+        ),
     },
     "erp_order_items": {
         "factory_image_url": (
             "VARCHAR(500) NULL COMMENT '工厂原始图（用户可替换 input_image_url "
             "为自定义图，随时可重置回此值）'"
+        ),
+        "crop_enabled": (
+            "TINYINT(1) NOT NULL DEFAULT 1 COMMENT '白边裁剪开关（单元级，生成时快照到任务）'"
+        ),
+        "crop_threshold": (
+            "INT NOT NULL DEFAULT 10 COMMENT '白边判定阈值（与纯白欧氏距离，0-255）'"
         ),
     },
 }

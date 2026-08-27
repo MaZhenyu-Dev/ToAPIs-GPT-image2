@@ -20,6 +20,8 @@ from backend.app.prompts import EXTRACT_PROMPT_LABELS, EXTRACT_PROMPTS
 from backend.app.schemas import (
     EXTREME_RATIO_MODEL,
     EXTREME_SIZES,
+    CropConfigRequest,
+    CropConfigResponse,
     ErpExtractUnit,
     ErpGenerateItem,
     ErpGenerateRequest,
@@ -38,6 +40,7 @@ from backend.app.schemas import (
     ErpUploadResult,
 )
 from backend.app.services.batch_generator import batch_generator
+from backend.app.services.crop_service import _load_meta, schedule_crop
 from backend.app.services.size_mapping import map_size_to_ratio
 from backend.app.toapis_client import client as toapis_client
 
@@ -150,6 +153,16 @@ async def _build_units(db: AsyncSession, items: list[ErpOrderItem]) -> list[ErpE
         if task and task.status == "completed" and task.image_url:
             result_image = task.image_url
 
+        # 白边裁剪：配置以单元（代表行）当前值为准（生成前可改，改后即时生效）；
+        # 结果（crop_image_url/meta）来自任务。上传时也以单元配置为准。
+        crop_enabled = rep.crop_enabled if rep.crop_enabled is not None else True
+        crop_threshold = rep.crop_threshold or 10
+        crop_image_url = None
+        crop_meta = None
+        if task:
+            crop_image_url = task.crop_image_url
+            crop_meta = _load_meta(task)
+
         units.append(
             ErpExtractUnit(
                 unit_key=f"{store_name}::{goods_sn}",
@@ -171,6 +184,10 @@ async def _build_units(db: AsyncSession, items: list[ErpOrderItem]) -> list[ErpE
                 created_at=rep.created_at,
                 erp_uploaded_at=rep.erp_uploaded_at,
                 progress=task.progress if task else 0,
+                crop_enabled=crop_enabled,
+                crop_threshold=crop_threshold,
+                crop_image_url=crop_image_url,
+                crop_meta=crop_meta,
             )
         )
     return units
@@ -381,6 +398,10 @@ async def erp_generate(request: ErpGenerateRequest, db: AsyncSession = Depends(g
         now = datetime.now(timezone.utc)
         await erp_crud.set_generation_task(db, unit.order_item_ids, batch_id, task.id)
         await _clear_uploaded(db, unit.order_item_ids, now)
+        # 白边裁剪配置快照：生成时固化单元当前配置（后台裁剪/上传据此判定）
+        task.crop_enabled = unit.crop_enabled
+        task.crop_threshold = unit.crop_threshold
+        await db.commit()
 
         results.append(
             ErpGenerateItem(
@@ -456,8 +477,8 @@ async def _upload_unit(
     task = None
     if unit.generation_task_id:
         task = await db.get(GenerationTask, unit.generation_task_id)
-    image_url = (task.image_url if task else None) or unit.result_image_url
-    if not image_url or not task or task.status != "completed":
+    base_image_url = (task.image_url if task else None) or unit.result_image_url
+    if not base_image_url or not task or task.status != "completed":
         return ErpUploadResult(
             order_item_id=first,
             store_name=store_name,
@@ -466,17 +487,38 @@ async def _upload_unit(
             message="该单元还没有可上传的生成结果",
         )
 
+    # 白边裁剪：单元开启且任务已有裁剪结果 → 上传裁剪后的效果图
+    crop_enabled = unit.crop_enabled if unit.crop_enabled is not None else True
+    image_url = base_image_url
+    use_cropped = crop_enabled and bool(task.crop_image_url)
+    if use_cropped:
+        image_url = task.crop_image_url
+
     # 下载生成图字节（ToAPIs CDN，走现有代理下载逻辑）
     try:
         image_bytes = await toapis_client.fetch_image_bytes(image_url)
     except Exception as exc:
-        return ErpUploadResult(
-            order_item_id=first,
-            store_name=store_name,
-            goods_sn=goods_sn,
-            success=False,
-            message=f"下载生成图失败: {exc}",
-        )
+        if use_cropped:
+            # 降级保障：裁剪图获取失败 → 回退原图，功能不受影响
+            try:
+                image_bytes = await toapis_client.fetch_image_bytes(base_image_url)
+            except Exception as exc2:
+                return ErpUploadResult(
+                    order_item_id=first,
+                    store_name=store_name,
+                    goods_sn=goods_sn,
+                    success=False,
+                    message=f"下载生成图失败（裁剪图与原图均不可用）: {exc2}",
+                )
+            use_cropped = False
+        else:
+            return ErpUploadResult(
+                order_item_id=first,
+                store_name=store_name,
+                goods_sn=goods_sn,
+                success=False,
+                message=f"下载生成图失败: {exc}",
+            )
 
     # 逐条提交到 ERP（ERP 端也会按货号批量标记，双保险）
     failed: list[str] = []
@@ -510,6 +552,7 @@ async def _upload_unit(
         message=(
             f"已上传 {len(unit.order_item_ids) - len(failed)}/{len(unit.order_item_ids)} 条"
             + (f"；失败: {'；'.join(failed)}" if failed else "")
+            + ("" if use_cropped else "（裁剪图不可用，已回退上传原图）")
         ),
     )
 
@@ -614,6 +657,63 @@ async def erp_reset_input_image(
         item.input_image_url = item.factory_image_url
         await db.commit()
     return {"success": True, "input_image_url": item.factory_image_url}
+
+
+@router.post("/orders/{order_item_id}/crop-config", response_model=CropConfigResponse)
+async def erp_set_crop_config(
+    order_item_id: int,
+    request: CropConfigRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """设置单元的「白边裁剪」开关 / 阈值（生成前可改，改后即时生效）。
+
+    - 配置写单元全部订单行（代表行变化不丢配置）
+    - 已有生成任务时同步写任务快照（后台裁剪/上传据此判定）
+    - 开启且任务已完成后：立即补算裁剪（无结果时后台调度）
+    """
+    item = await db.get(ErpOrderItem, order_item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="订单记录不存在")
+
+    members = await erp_crud.get_items_by_key(db, item.store_name, item.goods_sn)
+    for member in members:
+        member.crop_enabled = request.enabled
+        member.crop_threshold = request.threshold
+
+    task: GenerationTask | None = None
+    if item.generation_task_id:
+        task = await db.get(GenerationTask, item.generation_task_id)
+    if task:
+        task.crop_enabled = request.enabled
+        task.crop_threshold = request.threshold
+    await db.commit()
+
+    # 开启且任务已完成：有裁剪结果则复用；无结果或阈值已变/之前失败 → 后台补算
+    crop_image_url = None
+    crop_meta = None
+    if request.enabled and task and task.status == "completed":
+        crop_image_url = task.crop_image_url
+        if task.crop_meta:
+            try:
+                crop_meta = json.loads(task.crop_meta)
+            except (ValueError, TypeError):
+                crop_meta = None
+        stale = (
+            crop_meta is None
+            or "error" in crop_meta
+            or crop_meta.get("threshold") != request.threshold
+        )
+        if not crop_image_url or stale:
+            schedule_crop(task.id)
+            crop_image_url = None
+            crop_meta = None
+
+    return CropConfigResponse(
+        crop_enabled=request.enabled,
+        crop_threshold=request.threshold,
+        crop_image_url=crop_image_url,
+        crop_meta=crop_meta,
+    )
 
 
 # 供前端获取提取产品图 prompt 预设（客厅地毯 / 走廊地毯）

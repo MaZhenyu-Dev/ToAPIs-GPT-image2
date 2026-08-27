@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { downloadImage, extractGenerate, extractHistory } from '../../api'
 import {
+  downloadImage,
+  extractGenerate,
+  extractHistory,
+  taskRecomputeCrop,
+  taskSetCropConfig,
+} from '../../api'
+import {
+  DEFAULT_CROP_THRESHOLD,
   DEFAULT_IMAGE_MODEL,
   DEFAULT_RESOLUTION,
   DEFAULT_SIZE,
@@ -11,8 +18,10 @@ import { useBatchPolling } from '../../hooks/useBatchPolling'
 import { useBatchPrefix } from '../../hooks/useBatchPrefix'
 import { useOnlineStatus } from '../../hooks/useOnlineStatus'
 import { triggerDownload } from '../../lib/batchDownloads'
+import { formatCropSummary } from '../../lib/cropFormat'
 import type {
   BatchStatusResponse,
+  CropMeta,
   ErpExtractUnit,
   ExtractHistoryItem,
   GenerationTaskItem,
@@ -20,6 +29,7 @@ import type {
   ImageQuality,
 } from '../../types'
 import ComparePreview from './ComparePreview'
+import CropToggle from './CropToggle'
 import ExtractPromptSelector from './ExtractPromptSelector'
 import FadeInImage from '../ui/FadeInImage'
 import GlassButton from '../ui/GlassButton'
@@ -48,7 +58,13 @@ function toPreviewUnit(
   batchId: string,
   taskId: number,
   status: string,
-  createdAt: string | null
+  createdAt: string | null,
+  crop?: {
+    enabled: boolean
+    threshold: number
+    imageUrl: string | null
+    meta: CropMeta | null
+  }
 ): ErpExtractUnit {
   return {
     unit_key: `${batchId}-${taskId}`,
@@ -70,6 +86,25 @@ function toPreviewUnit(
     created_at: createdAt,
     erp_uploaded_at: null,
     progress: 0,
+    crop_enabled: crop?.enabled ?? false,
+    crop_threshold: crop?.threshold ?? DEFAULT_CROP_THRESHOLD,
+    crop_image_url: crop?.imageUrl ?? null,
+    crop_meta: crop?.meta ?? null,
+  }
+}
+
+/** 从任务/历史项提取裁剪字段（ComparePreview 与摘要展示共用） */
+function cropOf(task: GenerationTaskItem | ExtractHistoryItem): {
+  enabled: boolean
+  threshold: number
+  imageUrl: string | null
+  meta: CropMeta | null
+} {
+  return {
+    enabled: task.crop_enabled ?? false,
+    threshold: task.crop_threshold ?? DEFAULT_CROP_THRESHOLD,
+    imageUrl: task.crop_image_url ?? null,
+    meta: task.crop_meta ?? null,
   }
 }
 
@@ -91,6 +126,11 @@ export default function CustomExtract() {
   const [regenerateTarget, setRegenerateTarget] = useState<GenerationTaskItem | null>(null)
   const [regeneratingTaskId, setRegeneratingTaskId] = useState<number | null>(null)
   const [previewUnit, setPreviewUnit] = useState<ErpExtractUnit | null>(null)
+
+  // ---------- 白边裁剪（表单统一配置 + 任务级切换/补算） ----------
+  const [cropEnabled, setCropEnabled] = useState(true)
+  const [cropThreshold, setCropThreshold] = useState(DEFAULT_CROP_THRESHOLD)
+  const [cropSavingTaskId, setCropSavingTaskId] = useState<number | null>(null)
 
   // ---------- 视图切换（当前生成 / 生成历史） ----------
   const [view, setView] = useState<'current' | 'history'>('current')
@@ -141,6 +181,8 @@ export default function CustomExtract() {
         prefix,
         model,
         ...(quality ? { quality } : {}),
+        crop_enabled: cropEnabled,
+        crop_threshold: cropThreshold,
       })
       const status = await fetchOnce(response.batch_id)
       if (status) setBatch(status)
@@ -150,6 +192,40 @@ export default function CustomExtract() {
       toast.error(err instanceof Error ? err.message : '创建生成任务失败')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  // 任务级裁剪配置：开关/阈值修改 → 保存 + 补算 + 刷新当前批次/历史
+  const handleTaskCropConfig = async (
+    taskId: number,
+    enabled: boolean,
+    threshold: number
+  ) => {
+    setCropSavingTaskId(taskId)
+    try {
+      const res = await taskSetCropConfig(taskId, enabled, threshold)
+      if (enabled && !res.crop_image_url) {
+        try {
+          await taskRecomputeCrop(taskId)
+        } catch {
+          /* 补算失败静默：刷新后显示裁剪失败状态 */
+        }
+      }
+      if (view === 'current' && batch) {
+        const status = await fetchOnce(batch.batch_id)
+        if (status) setBatch(status)
+      } else {
+        await loadHistory()
+      }
+      toast.success(
+        enabled
+          ? `已开启白边裁剪（阈值 ${threshold}）`
+          : '已关闭白边裁剪'
+      )
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '保存裁剪配置失败')
+    } finally {
+      setCropSavingTaskId(null)
     }
   }
 
@@ -299,6 +375,21 @@ export default function CustomExtract() {
             />
 
             <div className="form-group">
+              <label>白边裁剪（生成时自动裁掉纯白边，可随时在结果卡上开关）</label>
+              <CropToggle
+                enabled={cropEnabled}
+                threshold={cropThreshold}
+                onSave={(enabled, threshold) => {
+                  setCropEnabled(enabled)
+                  setCropThreshold(threshold)
+                }}
+              />
+              <div className="hint">
+                默认开启；像素与纯白欧氏距离 ≤ 阈值即视为白边，阈值越大越激进
+              </div>
+            </div>
+
+            <div className="form-group">
               <label htmlFor="custom-prefix">批次号前缀</label>
               <input
                 id="custom-prefix"
@@ -353,6 +444,11 @@ export default function CustomExtract() {
                   const inputUrl = images[index] ?? null
                   const isCompleted = task.status === 'completed'
                   const isFailed = task.status === 'failed'
+                  const crop = cropOf(task)
+                  const displayResultUrl =
+                    crop.enabled && crop.imageUrl
+                      ? crop.imageUrl
+                      : task.image_url
                   return (
                     <div
                       key={task.id}
@@ -375,31 +471,33 @@ export default function CustomExtract() {
                             setPreviewUnit(
                               toPreviewUnit(
                                 inputUrl,
-                                task.image_url,
+                                displayResultUrl,
                                 `#${index + 1}`,
                                 task.size,
                                 task.batch_id,
                                 task.id,
                                 task.status,
-                                task.created_at
+                                task.created_at,
+                                crop
                               )
                             )
                           }
                         />
                         <CustomThumb
-                          url={task.image_url}
+                          url={displayResultUrl}
                           label={`结果 ${index + 1}`}
                           onClick={() =>
                             setPreviewUnit(
                               toPreviewUnit(
                                 inputUrl,
-                                task.image_url,
+                                displayResultUrl,
                                 `#${index + 1}`,
                                 task.size,
                                 task.batch_id,
                                 task.id,
                                 task.status,
-                                task.created_at
+                                task.created_at,
+                                crop
                               )
                             )
                           }
@@ -426,6 +524,31 @@ export default function CustomExtract() {
                                   : `${STATUS_TEXT[task.status] ?? task.status} · ${task.progress}%`}
                             </span>
                           </div>
+                          {isCompleted && (
+                            <div style={{ marginTop: '0.3rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                              <CropToggle
+                                enabled={crop.enabled}
+                                threshold={crop.threshold}
+                                saving={cropSavingTaskId === task.id}
+                                onSave={(enabled, threshold) =>
+                                  void handleTaskCropConfig(task.id, enabled, threshold)
+                                }
+                              />
+                              {crop.enabled && crop.meta && !crop.meta.error && (
+                                <span className="hint">{formatCropSummary(crop.meta)}</span>
+                              )}
+                              {crop.enabled && crop.meta?.error && (
+                                <span className="hint" style={{ color: 'var(--danger)' }} title={crop.meta.error}>
+                                  裁剪失败，显示原图
+                                </span>
+                              )}
+                              {crop.enabled && !crop.meta && (
+                                <span className="hint" style={{ color: 'var(--warning)' }}>
+                                  裁剪计算中…
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', alignItems: 'stretch' }}>
@@ -437,13 +560,14 @@ export default function CustomExtract() {
                               setPreviewUnit(
                                 toPreviewUnit(
                                   inputUrl,
-                                  task.image_url,
+                                  displayResultUrl,
                                   `#${index + 1}`,
                                   task.size,
                                   task.batch_id,
                                   task.id,
                                   task.status,
-                                  task.created_at
+                                  task.created_at,
+                                  crop
                                 )
                               )
                             }
@@ -522,6 +646,11 @@ export default function CustomExtract() {
               {historyItems.map((item) => {
                 const isCompleted = item.status === 'completed'
                 const isFailed = item.status === 'failed'
+                const crop = cropOf(item)
+                const displayResultUrl =
+                  crop.enabled && crop.imageUrl
+                    ? crop.imageUrl
+                    : item.result_image_url
                 return (
                   <div
                     key={item.task_id}
@@ -544,31 +673,33 @@ export default function CustomExtract() {
                           setPreviewUnit(
                             toPreviewUnit(
                               item.input_image_url,
-                              item.result_image_url,
+                              displayResultUrl,
                               item.batch_id,
                               item.size,
                               item.batch_id,
                               item.task_id,
                               item.status,
-                              item.created_at
+                              item.created_at,
+                              crop
                             )
                           )
                         }
                       />
                       <CustomThumb
-                        url={item.result_image_url}
+                        url={displayResultUrl}
                         label="生成图"
                         onClick={() =>
                           setPreviewUnit(
                             toPreviewUnit(
                               item.input_image_url,
-                              item.result_image_url,
+                              displayResultUrl,
                               item.batch_id,
                               item.size,
                               item.batch_id,
                               item.task_id,
                               item.status,
-                              item.created_at
+                              item.created_at,
+                              crop
                             )
                           )
                         }
@@ -594,6 +725,31 @@ export default function CustomExtract() {
                             {new Date(item.created_at).toLocaleString()}
                           </span>
                         </div>
+                        {isCompleted && (
+                          <div style={{ marginTop: '0.3rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            <CropToggle
+                              enabled={crop.enabled}
+                              threshold={crop.threshold}
+                              saving={cropSavingTaskId === item.task_id}
+                              onSave={(enabled, threshold) =>
+                                void handleTaskCropConfig(item.task_id, enabled, threshold)
+                              }
+                            />
+                            {crop.enabled && crop.meta && !crop.meta.error && (
+                              <span className="hint">{formatCropSummary(crop.meta)}</span>
+                            )}
+                            {crop.enabled && crop.meta?.error && (
+                              <span className="hint" style={{ color: 'var(--danger)' }} title={crop.meta.error}>
+                                裁剪失败，显示原图
+                              </span>
+                            )}
+                            {crop.enabled && !crop.meta && (
+                              <span className="hint" style={{ color: 'var(--warning)' }}>
+                                裁剪计算中…
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', alignItems: 'stretch' }}>
@@ -605,13 +761,14 @@ export default function CustomExtract() {
                             setPreviewUnit(
                               toPreviewUnit(
                                 item.input_image_url,
-                                item.result_image_url,
+                                displayResultUrl,
                                 item.batch_id,
                                 item.size,
                                 item.batch_id,
                                 item.task_id,
                                 item.status,
-                                item.created_at
+                                item.created_at,
+                                crop
                               )
                             )
                           }

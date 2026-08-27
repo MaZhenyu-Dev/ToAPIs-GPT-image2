@@ -150,6 +150,11 @@ class BackgroundPoller:
                     image_url=image_url,
                     error_msg=error_msg,
                 )
+                if new_status == "completed" and image_url:
+                    # 生成完成 → 后台自动裁剪白边（启用时）
+                    from backend.app.services.crop_service import schedule_crop
+
+                    schedule_crop(fresh_task.id)
                 if new_status == "failed":
                     # 失败后自动重试（模型阶梯；3 次后停止交由用户手动重试）
                     await batch_generator.maybe_auto_retry(session, fresh_task)

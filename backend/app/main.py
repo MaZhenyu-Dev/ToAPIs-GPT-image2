@@ -15,6 +15,7 @@ from backend.app.routers import (
     extract,
     generations,
     product_swap,
+    tasks,
     title_generation,
     variant_groups,
 )
@@ -60,6 +61,7 @@ app.include_router(product_swap.router, prefix="/api")
 app.include_router(title_generation.router, prefix="/api")
 app.include_router(erp.router, prefix="/api")
 app.include_router(extract.router, prefix="/api")
+app.include_router(tasks.router, prefix="/api")
 
 
 @app.get("/health")

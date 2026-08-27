@@ -405,6 +405,9 @@ async def reset_task_for_regenerate(
     task.error_msg = None
     task.toapis_task_id = None
     task.completed_at = None
+    # 重新生成后裁剪结果作废（配置快照保留，新图完成后自动重裁）
+    task.crop_image_url = None
+    task.crop_meta = None
     task.created_at = datetime.now(timezone.utc)
     task.retried_count = (task.retried_count or 0) + 1
     await db.commit()
