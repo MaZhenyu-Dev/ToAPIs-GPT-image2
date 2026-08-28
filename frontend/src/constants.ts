@@ -125,6 +125,13 @@ export const MAX_I2I_MULTI_COUNT = 300
 // 与 Windows 资源管理器默认排序一致）后取前 N 张
 export const I2I_MULTI_IMAGE_EXTS = ['png', 'jpg', 'jpeg'] as const
 
+// 文件夹批量图生图：单张图片大小上限（与后端上传接口 /api/generations/uploads/images
+// 的 10MB 限制一致，超过的图片会被跳过，不参与上传）
+export const I2I_MULTI_MAX_FILE_SIZE = 10 * 1024 * 1024
+
+// 超限确认弹窗中最多展示的文件名个数（超出部分以"等 X 个文件"截断）
+export const I2I_MULTI_OVERSIZE_PREVIEW_ROWS = 5
+
 // ---------- 白边裁剪（提取产品图） ----------
 
 // 像素与纯白 (255,255,255) 的欧氏距离 <= 阈值即视为白边（0-255，越大越激进）

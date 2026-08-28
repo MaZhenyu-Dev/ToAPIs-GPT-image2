@@ -11,6 +11,8 @@ import {
   DEFAULT_IMAGE_QUALITY,
   DEFAULT_RESOLUTION,
   DEFAULT_SIZE,
+  I2I_MULTI_MAX_FILE_SIZE,
+  I2I_MULTI_OVERSIZE_PREVIEW_ROWS,
   IMAGE_MODEL_OPTIONS,
   IMAGE_QUALITY_OPTIONS,
   MAX_I2I_MULTI_COUNT,
@@ -33,6 +35,7 @@ import type {
 } from '../../types'
 import GlassButton from '../ui/GlassButton'
 import GlassCard from '../ui/GlassCard'
+import { useConfirm } from '../ui/ConfirmDialog'
 import ImageUploader from '../ImageUploader'
 import ParameterSelector from '../ParameterSelector'
 import RegenerateDialog from './RegenerateDialog'
@@ -44,6 +47,9 @@ import AutoRelayDialog from './AutoRelayDialog'
 import { displayBatchId } from '../../lib/batchDownloads'
 
 const POLL_INTERVAL_MS = 3000
+
+/** 文件夹批量：单张图片大小上限（MB，与后端上传接口一致） */
+const MAX_FILE_SIZE_MB = I2I_MULTI_MAX_FILE_SIZE / (1024 * 1024)
 
 type BatchMode = 'variant' | 'folder'
 
@@ -60,6 +66,7 @@ interface BatchWorkspaceProps {
  */
 export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspaceProps) {
   const toast = useToast()
+  const confirm = useConfirm()
 
   // ---------- 共用配置 ----------
   const [mode, setMode] = useState<BatchMode>('variant')
@@ -116,6 +123,26 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
   const selectedModel = IMAGE_MODEL_OPTIONS.find((m) => m.id === imageModel)
   const qualitySupported = selectedModel?.qualitySupported ?? false
 
+  // 文件夹批量：超限图片确认弹窗（文件名列表截断展示，最多前 5 个）
+  const confirmOversized = useCallback(
+    async (oversizedNames: string[], uploadCount: number) => {
+      const preview = oversizedNames
+        .slice(0, I2I_MULTI_OVERSIZE_PREVIEW_ROWS)
+        .join('、')
+      const listText =
+        oversizedNames.length > I2I_MULTI_OVERSIZE_PREVIEW_ROWS
+          ? `${preview} 等 ${oversizedNames.length} 个文件`
+          : preview
+      return confirm({
+        title: '发现超大图片',
+        message: `以下 ${oversizedNames.length} 张图片超过 ${MAX_FILE_SIZE_MB}MB，将被跳过不上传：\n${listText}\n\n是否继续上传其余 ${uploadCount} 张图片？`,
+        confirmLabel: '继续上传',
+        tone: 'primary',
+      })
+    },
+    [confirm]
+  )
+
   const folder = useFolderBatch({
     groupId,
     variantCount: K,
@@ -126,6 +153,7 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
     refreshTodayCount,
     model: imageModel,
     quality: qualitySupported ? quality : undefined,
+    onOversizedConfirm: confirmOversized,
   })
 
   const folderRunning =
@@ -619,6 +647,12 @@ function FolderModeSection({
   const running =
     folder.progress?.phase === 'uploading' || folder.progress?.phase === 'creating'
   const { selectedImages, scannedCount } = folder
+  // 有效图片（未超限）数量：超限图片整目录跳过，不参与选取
+  const validCount = scannedCount - folder.oversizedCount
+  const uploadPct =
+    folder.progress && folder.progress.totalToUpload > 0
+      ? Math.round((folder.progress.uploaded / folder.progress.totalToUpload) * 100)
+      : 0
   // 数量输入合法判定：空 = 全部；否则 1-300
   const limitValid =
     folder.limit === '' ||
@@ -674,6 +708,9 @@ function FolderModeSection({
             {folder.dirHandle && (
               <span className="config-meta" title="支持 png/jpg/jpeg，按名称自然排序">
                 {folder.dirHandle.name}（{folder.scannedCount} 张图片
+                {folder.oversizedCount > 0
+                  ? `，${folder.oversizedCount} 张超过 ${MAX_FILE_SIZE_MB}MB 将跳过`
+                  : ''}
                 {folder.ignoredCount > 0 ? `，跳过 ${folder.ignoredCount} 个非图片` : ''}
                 {truncated ? `，超过上限仅使用前 ${MAX_I2I_MULTI_COUNT} 张` : ''}）
               </span>
@@ -687,18 +724,56 @@ function FolderModeSection({
         </div>
       </div>
 
+      {/* 上传进度条 */}
+      {folder.progress && running && (
+        <div className="folder-progress" style={{ marginTop: 'var(--space-4)' }}>
+          <div className="folder-progress-head">
+            <span>
+              {folder.progress.phase === 'uploading'
+                ? `上传图片中 ${folder.progress.uploaded}/${folder.progress.totalToUpload}`
+                : '上传完成，正在创建批次…'}
+            </span>
+            {folder.progress.phase === 'uploading' && (
+              <span className="folder-progress-percent">{uploadPct}%</span>
+            )}
+          </div>
+          <div className="folder-progress-track">
+            <div
+              className={
+                folder.progress.phase === 'creating'
+                  ? 'folder-progress-fill folder-progress-fill--indeterminate'
+                  : 'folder-progress-fill'
+              }
+              style={
+                folder.progress.phase === 'creating' ? undefined : { width: `${uploadPct}%` }
+              }
+            />
+          </div>
+          {folder.progress.phase === 'uploading' && folder.progress.currentFile && (
+            <div className="folder-progress-file" title="最近完成上传的图片">
+              最近完成：{folder.progress.currentFile}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 使用预览 */}
-      {folder.dirHandle && scannedCount > 0 && (
+      {folder.dirHandle && scannedCount > 0 && validCount > 0 && (
         <div className="folder-match-box" style={{ marginTop: 'var(--space-4)' }}>
           <div>
             将使用 <strong>{selectedImages.length}</strong> 张图片
-            {folder.limit !== '' && scannedCount > selectedImages.length
-              ? `（文件夹共 ${scannedCount} 张，按名称排序取前 ${selectedImages.length} 张）`
-              : `（文件夹共 ${scannedCount} 张）`}
+            {folder.limit !== '' && validCount > selectedImages.length
+              ? `（有效图片 ${validCount} 张，按名称排序取前 ${selectedImages.length} 张）`
+              : `（有效图片 ${validCount} 张）`}
             ，创建 <strong>{selectedImages.length}</strong> 个批次
             （每批 {variantCount} 个任务，共约{' '}
             <strong>{selectedImages.length * variantCount}</strong> 个任务）
           </div>
+          {folder.oversizedCount > 0 && (
+            <div style={{ marginTop: '0.3rem', color: 'var(--warning)' }}>
+              {folder.oversizedCount} 张图片超过 {MAX_FILE_SIZE_MB}MB 将不上传，点击开始创建时会再次确认
+            </div>
+          )}
           {selectedImages.length > 0 && (
             <details style={{ marginTop: '0.4rem' }}>
               <summary style={{ cursor: 'pointer', fontSize: '0.76rem' }}>
@@ -719,6 +794,19 @@ function FolderModeSection({
           style={{ marginTop: 'var(--space-4)' }}
         >
           文件夹中没有可用的图片（支持 png / jpg / jpeg）
+        </div>
+      )}
+      {folder.dirHandle && scannedCount > 0 && validCount === 0 && (
+        <div
+          className="folder-match-box"
+          style={{
+            marginTop: 'var(--space-4)',
+            borderColor: 'var(--danger-soft)',
+            color: 'var(--danger)',
+          }}
+        >
+          文件夹中 {scannedCount} 张图片全部超过 {MAX_FILE_SIZE_MB}MB，无法创建批次（上传接口单张上限{' '}
+          {MAX_FILE_SIZE_MB}MB），请压缩或移除超大图片后重新选择
         </div>
       )}
 
@@ -748,6 +836,18 @@ function FolderModeSection({
               ))}
             </div>
           </details>
+          {folder.oversizedCount > 0 && (
+            <details style={{ marginTop: '0.4rem' }}>
+              <summary style={{ cursor: 'pointer', fontSize: '0.76rem', color: 'var(--warning)' }}>
+                已跳过 {folder.oversizedCount} 张超过 {MAX_FILE_SIZE_MB}MB 的图片
+              </summary>
+              <div className="folder-match-detail">
+                {folder.oversizedNames.map((name) => (
+                  <span key={name}>{name}</span>
+                ))}
+              </div>
+            </details>
+          )}
           <div style={{ marginTop: '0.6rem' }}>
             <GlassButton size="sm" variant="secondary" onClick={folder.resetRun}>
               再来一次

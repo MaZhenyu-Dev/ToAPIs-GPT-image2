@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createI2iMulti, uploadImage } from '../api'
-import { I2I_MULTI_IMAGE_EXTS, MAX_I2I_MULTI_COUNT } from '../constants'
+import { I2I_MULTI_IMAGE_EXTS, I2I_MULTI_MAX_FILE_SIZE, MAX_I2I_MULTI_COUNT } from '../constants'
 import type {
   I2iMultiCreateResponse,
   ImageModelId,
@@ -67,6 +67,11 @@ interface UseFolderBatchOptions {
   /** 生图模型（默认 gpt-image-2）与精度档位（可选） */
   model?: ImageModelId
   quality?: ImageQuality
+  /**
+   * 存在超过 I2I_MULTI_MAX_FILE_SIZE 的图片时，开始上传前确认（超限图片已被过滤，
+   * 不会上传）；返回 false 中止本次创建。缺省时不弹确认直接跳过超限图片。
+   */
+  onOversizedConfirm?: (oversizedNames: string[], uploadCount: number) => Promise<boolean>
 }
 
 export interface UseFolderBatchReturn {
@@ -79,6 +84,9 @@ export interface UseFolderBatchReturn {
   scanError: string | null
   scannedCount: number
   ignoredCount: number
+  /** 超过大小上限、将被跳过的图片数 / 文件名列表（自然排序顺序） */
+  oversizedCount: number
+  oversizedNames: string[]
   handlePickFolder: () => Promise<void>
   /** 将使用的图片（自然排序后取前 N 张，上限 300） */
   selectedImages: ScannedImage[]
@@ -96,9 +104,10 @@ export interface UseFolderBatchReturn {
  * 流程：
  * 1. showDirectoryPicker 选目录 → 扫描所有 png/jpg/jpeg 图片
  * 2. 按文件名自然排序（数字感知，同 Windows 资源管理器默认排序）
- * 3. 用户自定义数量（不填 = 全部，上限 300），取前 N 张
- * 4. runCreate：并发上传（信号量 5）→ /api/batches/i2i-multi 原子创建 N 个批次
- * 5. 任一上传失败 → 整批回滚，progress.phase = 'error'
+ * 3. 过滤超过 I2I_MULTI_MAX_FILE_SIZE 的图片（若存在则先经 onOversizedConfirm 确认）
+ * 4. 用户自定义数量（不填 = 全部，上限 300），在过滤后的图片中取前 N 张
+ * 5. runCreate：并发上传（信号量 5）→ /api/batches/i2i-multi 原子创建 N 个批次
+ * 6. 任一上传失败 → 整批回滚，progress.phase = 'error'
  */
 export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchReturn {
   const {
@@ -110,6 +119,7 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
     refreshTodayCount,
     model,
     quality,
+    onOversizedConfirm,
   } = options
 
   const [limit, setLimitState] = useState<string>('')
@@ -132,17 +142,27 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
     setLimitState(v.replace(/[^\d]/g, ''))
   }, [])
 
-  // 实际使用的图片数量：不填 = 全部（上限 MAX_I2I_MULTI_COUNT）
+  // 超过大小上限的图片：整目录过滤，不参与选取（后端上传接口上限 10MB）
+  const oversizedImages = useMemo(
+    () => scanned.filter((s) => s.file.size > I2I_MULTI_MAX_FILE_SIZE),
+    [scanned]
+  )
+  const validImages = useMemo(
+    () => scanned.filter((s) => s.file.size <= I2I_MULTI_MAX_FILE_SIZE),
+    [scanned]
+  )
+
+  // 实际使用的图片数量：先过滤超限，再取前 N（不填 = 全部，上限 MAX_I2I_MULTI_COUNT）
   const selectedCount = useMemo(() => {
-    if (limit === '') return Math.min(scanned.length, MAX_I2I_MULTI_COUNT)
+    if (limit === '') return Math.min(validImages.length, MAX_I2I_MULTI_COUNT)
     const n = parseInt(limit, 10)
     if (!Number.isFinite(n) || n <= 0) return 0
-    return Math.min(n, scanned.length, MAX_I2I_MULTI_COUNT)
-  }, [limit, scanned.length])
+    return Math.min(n, validImages.length, MAX_I2I_MULTI_COUNT)
+  }, [limit, validImages.length])
 
   const selectedImages = useMemo(
-    () => scanned.slice(0, selectedCount),
-    [scanned, selectedCount]
+    () => validImages.slice(0, selectedCount),
+    [validImages, selectedCount]
   )
 
   const canStart =
@@ -211,6 +231,16 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
 
   const runCreate = useCallback(async () => {
     if (selectedImages.length === 0) return
+
+    // 超限确认：点击开始时若有超过 10MB 的图片，先弹窗确认（超限图片已在选取阶段过滤）
+    if (oversizedImages.length > 0 && onOversizedConfirm) {
+      const ok = await onOversizedConfirm(
+        oversizedImages.map((s) => s.filename),
+        selectedImages.length
+      )
+      if (!ok) return
+    }
+
     setProgress({
       phase: 'uploading',
       uploaded: 0,
@@ -316,7 +346,7 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
         })
       }
     }
-  }, [selectedImages, groupId, size, resolution, prefix, refreshTodayCount])
+  }, [selectedImages, oversizedImages, onOversizedConfirm, groupId, size, resolution, prefix, refreshTodayCount])
 
   const resetRun = useCallback(() => {
     setProgress(null)
@@ -334,6 +364,8 @@ export function useFolderBatch(options: UseFolderBatchOptions): UseFolderBatchRe
     scanError,
     scannedCount: scanned.length,
     ignoredCount,
+    oversizedCount: oversizedImages.length,
+    oversizedNames: oversizedImages.map((s) => s.filename),
     handlePickFolder,
     selectedImages,
     canStart,
