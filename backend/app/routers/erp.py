@@ -41,7 +41,12 @@ from backend.app.schemas import (
 )
 from backend.app.services.batch_generator import batch_generator
 from backend.app.services.crop_service import _load_meta, schedule_crop
-from backend.app.services.size_mapping import map_size_to_ratio
+from backend.app.services.size_mapping import (
+    build_corridor_placeholders,
+    fill_corridor_placeholders,
+    is_corridor_size,
+    map_size_to_ratio,
+)
 from backend.app.toapis_client import client as toapis_client
 
 router = APIRouter(prefix="/erp", tags=["erp"])
@@ -334,15 +339,42 @@ async def erp_generate(request: ErpGenerateRequest, db: AsyncSession = Depends(g
 
     results: list[ErpGenerateItem] = []
     for unit in pending_units:
-        size = unit.mapped_ratio
-        if request.size_mode == "fixed" and request.fixed_size:
-            size = request.fixed_size
-        override = request.size_overrides.get(str(unit.representative_order_item_id))
-        if override:
-            size = override
+        # 走廊地毯按订单尺寸白名单判定（宽 75/80 × 长 200/240/300/360/400）：
+        # 画布强制 1:1，真实比例/尺寸通过占位符写进 prompt，避免
+        # 80x300 这类长条规格被映射成 4:1/8:1 极端比例（触发模型切换与
+        # 画布失真）。其余尺寸沿用原比例映射逻辑（auto/fixed/手动覆盖）。
+        rep_item = next(
+            (m for m in items if m.order_item_id == unit.representative_order_item_id),
+            None,
+        )
+        corridor_mode = rep_item is not None and is_corridor_size(rep_item.size or "")
+        if corridor_mode:
+            if rep_item is None or not build_corridor_placeholders(rep_item.size or ""):
+                results.append(
+                    ErpGenerateItem(
+                        batch_id=build_unit_batch_id(unit.store_name, unit.supplier_id, unit.goods_sn),
+                        store_name=unit.store_name,
+                        goods_sn=unit.goods_sn,
+                        success=False,
+                        message=(
+                            f"订单尺寸缺失或格式异常（{rep_item.size!r}），"
+                            "走廊地毯需要真实尺寸（如 80x200）才能生成"
+                        ),
+                    )
+                )
+                continue
+            size = "1:1"
+        else:
+            size = unit.mapped_ratio
+            if request.size_mode == "fixed" and request.fixed_size:
+                size = request.fixed_size
+            override = request.size_overrides.get(str(unit.representative_order_item_id))
+            if override:
+                size = override
 
         # 极端宽高比（4:1/8:1 等）只有 gemini-3.1-flash-image-preview 支持：
         # 该货号自动切换模型，其余货号沿用用户选择的模型
+        # （走廊地毯已强制 1:1，不会命中极端比例分支）
         task_model = EXTREME_RATIO_MODEL if size in EXTREME_SIZES else request.model
 
         # 下载输入图（ERP CDN，防盗链）→ 转传到 ToAPIs
@@ -364,11 +396,28 @@ async def erp_generate(request: ErpGenerateRequest, db: AsyncSession = Depends(g
             continue
 
         batch_id = build_unit_batch_id(unit.store_name, unit.supplier_id, unit.goods_sn)
+        # 走廊地毯：按订单实际尺寸填充 prompt 占位符
+        # （{{RUG_WIDTH_CM}} / {{ASPECT_RATIO}} / {{RUG_CANVAS_WIDTH}} 等）。
+        # 模板不含占位符时（如客厅模板/自定义文本）原样提交。
+        unit_prompt = request.prompt
+        if corridor_mode and "{{" in request.prompt:
+            unit_prompt = fill_corridor_placeholders(request.prompt, rep_item.size or "")
+            if not unit_prompt:
+                results.append(
+                    ErpGenerateItem(
+                        batch_id=batch_id,
+                        store_name=unit.store_name,
+                        goods_sn=unit.goods_sn,
+                        success=False,
+                        message="订单尺寸解析失败，走廊地毯占位符需要真实尺寸（如 80x200）",
+                    )
+                )
+                continue
         try:
             _, tasks = await batch_generator.create_extract_batch(
                 db,
                 batch_id=batch_id,
-                prompt=request.prompt,
+                prompt=unit_prompt,
                 items=[
                     {
                         "order_item_id": unit.representative_order_item_id,
@@ -509,7 +558,7 @@ async def _upload_unit(
         image_bytes = await toapis_client.fetch_image_bytes(image_url)
     except Exception as exc:
         if use_cropped:
-            # 降级保障：裁剪图获取失败 → 回退原图，功能不受影响
+            # 白边裁剪：单元开启且任务已有裁剪结果 → 上传裁剪后的效果图
             try:
                 image_bytes = await toapis_client.fetch_image_bytes(base_image_url)
             except Exception as exc2:

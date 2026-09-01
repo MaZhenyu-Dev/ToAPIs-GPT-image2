@@ -19,6 +19,9 @@ SUPPORTED_SIZES = Literal[
 EXTREME_SIZES = frozenset({"4:1", "1:4", "8:1", "1:8"})
 EXTREME_RATIO_MODEL = "gemini-3.1-flash-image-preview"
 
+# 变体组容量上限（前端 VariantGroupManager.MAX_VARIANTS 需同步）
+MAX_VARIANTS_PER_GROUP = 50
+
 # 生成模式：
 #   t2i        - 文生图
 #   i2i        - 图生图，批次内所有任务共享同一组 reference_image_urls
@@ -209,8 +212,8 @@ class VariantGroupCreate(BaseModel):
 
     @model_validator(mode="after")
     def check_variants_count(self):
-        if len(self.variants) > 20:
-            raise ValueError("变体数量不能超过 20 个")
+        if len(self.variants) > MAX_VARIANTS_PER_GROUP:
+            raise ValueError(f"变体数量不能超过 {MAX_VARIANTS_PER_GROUP} 个")
         return self
 
 
@@ -221,8 +224,8 @@ class VariantGroupUpdate(BaseModel):
 
     @model_validator(mode="after")
     def check_variants_count(self):
-        if self.variants is not None and len(self.variants) > 20:
-            raise ValueError("变体数量不能超过 20 个")
+        if self.variants is not None and len(self.variants) > MAX_VARIANTS_PER_GROUP:
+            raise ValueError(f"变体数量不能超过 {MAX_VARIANTS_PER_GROUP} 个")
         return self
 
 

@@ -67,7 +67,7 @@ export default function ExtractPromptSelector({ value, onChange, disabled }: Pro
           variant={active === t ? 'primary' : 'ghost'}
           onClick={() => prompts && onChange(prompts[t])}
           disabled={disabled}
-          title="切换后覆盖当前 Prompt 内容（可继续编辑）；提交时 {ASPECT_RATIO} 会自动替换为实际生成比例"
+          title="切换后覆盖当前 Prompt 内容（可继续编辑）；走廊地毯模板提交时会自动填充订单实际尺寸（宽/长 cm、宽高比、画布占比）并强制 1:1 画布"
         >
           {labels?.[t] ?? FALLBACK_LABELS[t]}
         </GlassButton>

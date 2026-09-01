@@ -60,6 +60,22 @@ const UNIT_STATUS_TEXT: Record<string, string> = {
 
 const POLL_INTERVAL_MS = 3000
 
+// 走廊地毯规格白名单（与后端 size_mapping.CORRIDOR_WIDTHS/LENGTHS 一致）：
+// 命中的单元后端强制 1:1 画布 + 尺寸占位符，前端隐藏比例选择
+const CORRIDOR_WIDTHS = new Set([75, 80])
+const CORRIDOR_LENGTHS = new Set([200, 240, 300, 360, 400])
+
+function isCorridorSize(sizeText: string): boolean {
+  const m = sizeText.match(/(\d+(?:\.\d+)?)\s*[xX*×]\s*(\d+(?:\.\d+)?)/)
+  if (!m) return false
+  const a = Math.round(parseFloat(m[1]))
+  const b = Math.round(parseFloat(m[2]))
+  if (a <= 0 || b <= 0) return false
+  const shortEdge = Math.min(a, b)
+  const longEdge = Math.max(a, b)
+  return CORRIDOR_WIDTHS.has(shortEdge) && CORRIDOR_LENGTHS.has(longEdge)
+}
+
 /** 工厂自动化：同步 ERP 图片缺失订单 → AI 生成产品图 → 前后对比 → 上传回 ERP。
  *
  * 批次号 = 店铺名-货号（每个货号一个批次），不占用 {prefix}{MMDD}{seq} 序号；
@@ -286,7 +302,9 @@ export default function FactoryAutomation() {
   }
 
   const handleGenerateAll = async () => {
+    // 走廊地毯白名单规格已由后端强制 1:1，不计入极端比例警告
     const extremeCount = pendingUnits.filter((u) => {
+      if (isCorridorSize(u.size)) return false
       const size =
         sizeOverrides[String(u.representative_order_item_id)] ??
         (sizeMode === 'fixed' ? fixedSize : u.mapped_ratio)
@@ -1388,7 +1406,7 @@ function UnitRow({
               saving={cropSaving}
               onSave={(enabled, threshold) => onCropConfig(enabled, threshold)}
             />
-            {unit.status === 'pending' && sizeMode === 'auto' && (
+            {unit.status === 'pending' && sizeMode === 'auto' && !isCorridorSize(unit.size) && (
               <label
                 style={{
                   display: 'inline-flex',

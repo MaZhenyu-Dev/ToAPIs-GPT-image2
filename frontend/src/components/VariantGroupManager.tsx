@@ -13,7 +13,7 @@ import GlassCard from './ui/GlassCard'
 import { useToast } from './ui/Toast'
 import { IconTrash } from './ui/Icon'
 
-const MAX_VARIANTS = 20
+const MAX_VARIANTS = 50
 
 interface Props {
   onSelect?: (group: VariantGroupListItem) => void

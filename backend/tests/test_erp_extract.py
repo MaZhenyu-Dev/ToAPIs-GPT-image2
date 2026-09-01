@@ -136,16 +136,20 @@ def test_map_size_to_ratio():
 
     80x400 表示宽80 高400，工厂要求长边(400)水平 → 目标 400/80=5 → 4:1
     （新增极端比例后不再强压 21:9）。
+    走廊地毯白名单规格（宽 75/80 × 长 200/240/300/360/400）统一 1:1
+    （真实比例由 prompt 占位符承载）。
     """
     cases = {
-        "80x400": "4:1",    # 5.0 → 4:1(4.0)（比 21:9 更接近真实比例）
-        "80x300": "4:1",    # 3.75 → 4:1(0.25) vs 21:9(1.42)
-        "75x400": "4:1",    # 5.33 → 4:1
-        "80x200": "21:9",   # 2.5 → 21:9(0.17) vs 4:1(1.5)
-        "200x300": "3:2",   # 1.5 → 3:2
-        "160x230": "3:2",   # 1.4375 → 3:2
-        "120x180": "3:2",   # 1.5 → 3:2
-        "120x170": "3:2",   # 1.417 → 3:2
+        "80x400": "1:1",    # 走廊白名单规格 → 1:1
+        "80x300": "1:1",    # 走廊白名单规格 → 1:1（修复：原来误映射 4:1）
+        "75x400": "1:1",    # 走廊白名单规格 → 1:1
+        "80x200": "1:1",    # 走廊白名单规格 → 1:1
+        "80x240": "1:1",    # 走廊白名单规格 → 1:1
+        "80x360": "1:1",    # 走廊白名单规格 → 1:1
+        "200x300": "3:2",   # 非走廊规格 → 正常映射
+        "160x230": "3:2",   # 非走廊规格 → 正常映射
+        "120x180": "3:2",   # 非走廊规格 → 正常映射
+        "120x170": "3:2",   # 非走廊规格 → 正常映射
         "80x80": "1:1",
         "120x120": "1:1",
         "50x55": "1:1",     # 1.1 → 1:1
@@ -156,6 +160,80 @@ def test_map_size_to_ratio():
         actual = map_size_to_ratio(size_text)
         assert actual == expected, f"{size_text} → {actual}，期望 {expected}"
     print("test_map_size_to_ratio: ok")
+
+
+# ---------- 3.5) 走廊地毯规格判定 + 占位符填充 ----------
+
+def test_corridor_size_detection():
+    """走廊地毯白名单：宽 75/80 × 长 200/240/300/360/400（长短边自动识别）。"""
+    from backend.app.services.size_mapping import is_corridor_size
+
+    # 命中：全部白名单组合
+    for w in (75, 80):
+        for l in (200, 240, 300, 360, 400):
+            assert is_corridor_size(f"{w}x{l}"), f"{w}x{l} 应命中走廊规格"
+            assert is_corridor_size(f"{l}x{w}"), f"{l}x{w} 应命中走廊规格"
+    # 不命中：非白名单宽/长
+    assert not is_corridor_size("70x200")
+    assert not is_corridor_size("80x180")
+    assert not is_corridor_size("80x500")
+    assert not is_corridor_size("160x230")
+    # 解析失败
+    assert not is_corridor_size("")
+    assert not is_corridor_size("abc")
+    print("test_corridor_size_detection: ok")
+
+
+
+def test_corridor_placeholders():
+    """订单尺寸 → 走廊地毯模板占位符（1:1 画布 + 真实尺寸参数）。"""
+    from backend.app.services.size_mapping import build_corridor_placeholders
+
+    # 用户给的标准示例：80x200 → 2.5:1 → 宽 90%、高 36%
+    p = build_corridor_placeholders("80x200")
+    assert p["{{RUG_WIDTH_CM}}"] == "80"
+    assert p["{{RUG_LENGTH_CM}}"] == "200"
+    assert p["{{ASPECT_RATIO}}"] == "2.5"
+    assert p["{{RUG_CANVAS_WIDTH}}"] == "90%"
+    assert p["{{RUG_CANVAS_HEIGHT}}"] == "36%"
+    assert p["{{BACKGROUND_COLOR}}"] == "pure white (#FFFFFF)"
+
+    # 整数比例不带小数：80x240 → 3
+    p2 = build_corridor_placeholders("80x240")
+    assert p2["{{ASPECT_RATIO}}"] == "3"
+    assert p2["{{RUG_CANVAS_HEIGHT}}"] == "30%"
+
+    # 顺序无关（长短边自动识别）：200x80 同 80x200
+    p3 = build_corridor_placeholders("200x80")
+    assert p3["{{RUG_WIDTH_CM}}"] == "80"
+    assert p3["{{RUG_LENGTH_CM}}"] == "200"
+
+    # 解析失败 → 空 dict（调用方应报错）
+    assert build_corridor_placeholders("") == {}
+    assert build_corridor_placeholders("abc") == {}
+    assert build_corridor_placeholders("80x") == {}
+    print("test_corridor_placeholders: ok")
+
+
+def test_corridor_fill_prompt():
+    """模板填充：占位符全部替换；解析失败返回空串（拒绝提交）。"""
+    from backend.app.services.size_mapping import fill_corridor_placeholders
+
+    template = (
+        "size: {{RUG_WIDTH_CM}} x {{RUG_LENGTH_CM}}, ratio {{ASPECT_RATIO}}:1, "
+        "canvas {{RUG_CANVAS_WIDTH}} / {{RUG_CANVAS_HEIGHT}}, bg {{BACKGROUND_COLOR}}"
+    )
+    filled = fill_corridor_placeholders(template, "80x200")
+    assert "{{" not in filled
+    assert "size: 80 x 200" in filled
+    assert "ratio 2.5:1" in filled
+    assert "canvas 90% / 36%" in filled
+
+    # 尺寸异常 + 模板含占位符 → 空串（后端报错提示用户）
+    assert fill_corridor_placeholders(template, "bad-size") == ""
+    # 模板无占位符 → 原样返回
+    assert fill_corridor_placeholders("no placeholders", "80x200") == "no placeholders"
+    print("test_corridor_fill_prompt: ok")
 
 
 def test_map_size_to_ratio_edge_cases():
@@ -332,6 +410,9 @@ def main() -> None:
     # 3) 尺寸映射
     test_map_size_to_ratio()
     test_map_size_to_ratio_edge_cases()
+    test_corridor_size_detection()
+    test_corridor_placeholders()
+    test_corridor_fill_prompt()
     # 4) payload
     test_build_payload_extract_uses_task_size_and_input()
     test_build_payload_i2i_multi_unaffected()

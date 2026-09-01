@@ -63,6 +63,34 @@ def _group_by_batch(
     return grouped
 
 
+async def _fill_prompt_for_task(
+    db: AsyncSession, task: GenerationTask, prompt: str
+) -> str:
+    """按任务关联订单的实际尺寸填充走廊地毯模板占位符。
+
+    prompt 含 {{...}} 占位符（双大括号）时：找到该任务关联的 erp_order_items
+    行，用其订单尺寸（如 "80x200"）计算填充。找不到尺寸时保留原文
+    （重新生成是次要路径，任务创建时 prompt 已填充过，理论上不会走到）。
+    """
+    if not prompt or "{{" not in prompt:
+        return prompt
+    from sqlalchemy import select
+
+    from backend.app.models import ErpOrderItem
+    from backend.app.services.size_mapping import fill_corridor_placeholders
+
+    result = await db.execute(
+        select(ErpOrderItem.size)
+        .where(ErpOrderItem.generation_task_id == task.id)
+        .limit(1)
+    )
+    size_text = result.scalar_one_or_none()
+    if not size_text:
+        return prompt
+    filled = fill_corridor_placeholders(prompt, size_text)
+    return filled or prompt
+
+
 class BatchGeneratorService:
     """批量生成服务：基于变体组创建任务并并发提交到 ToAPIs。"""
 
@@ -765,9 +793,11 @@ class BatchGeneratorService:
             task.size = size
             task.resolution = resolution
 
-        # prompt 覆盖（与前端文本框实时同步）
+        # prompt 覆盖（与前端文本框实时同步）。
+        # 走廊地毯模板含 {{ASPECT_RATIO}} 等占位符：重新生成时前端文本框
+        # 传来的仍是模板原文，这里按订单实际尺寸重新填充。
         if prompt is not None:
-            task.prompt = prompt
+            task.prompt = await _fill_prompt_for_task(db, task, prompt)
 
         await reset_task_for_regenerate(db, task)
 
