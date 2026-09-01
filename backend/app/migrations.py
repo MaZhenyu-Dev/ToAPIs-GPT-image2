@@ -56,6 +56,10 @@ REQUIRED_COLUMNS: dict[str, dict[str, str]] = {
         "crop_threshold": (
             "INT NOT NULL DEFAULT 10 COMMENT '白边判定阈值（与纯白欧氏距离，0-255）'"
         ),
+        "missing_synced_at": (
+            "DATETIME NULL COMMENT '最近一次同步时仍在 ERP 缺失列表的时间"
+            "（同步刷新，未同步到则保持旧值；待处理列表据此过滤幽灵订单）'"
+        ),
     },
 }
 

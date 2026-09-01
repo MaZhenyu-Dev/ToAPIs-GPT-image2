@@ -150,6 +150,13 @@ class ErpOrderItem(Base):
     erp_uploaded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # 最近一次同步时该订单仍在 ERP 缺失列表的时间戳。
+    # 同步时：本次爬到的订单刷新此字段；未爬到的（已从 ERP 缺失列表消失，
+    # 例如被人工补图 / 已在 ERP 端上传）保持旧值，待处理列表
+    # （only_missing=1）据此过滤，避免「幽灵订单」重新出现。
+    missing_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # 白边裁剪配置（单元级）：生成时快照到 generation_tasks，同步 upsert 不覆盖
     crop_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # 与纯白欧氏距离 <= 阈值即视为白边（0-255，越大越激进）

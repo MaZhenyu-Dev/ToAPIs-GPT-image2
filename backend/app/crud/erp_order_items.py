@@ -22,7 +22,8 @@ async def upsert_order_items(
     - ``factory_image_url``：工厂原始图（同步时总是更新）
 
     同步（upsert）时：工厂图总是刷新；已被用户替换过的输入图保持不变，
-    未替换过的输入图跟随工厂图更新。业务状态（generation_task_id /
+    未替换过的输入图跟随工厂图更新。missing_synced_at 刷新为本次同步时间
+    （标记该订单本次仍在 ERP 缺失列表中）。业务状态（generation_task_id /
     erp_uploaded_at 等）从不被同步覆盖。
     """
     saved = 0
@@ -38,15 +39,24 @@ async def upsert_order_items(
                            "crop_enabled", "crop_threshold"):
                     continue
                 setattr(existing, key, value)
-            # 工厂图总是跟随最新同步结果
+            # 先记旧工厂图再更新：旧值是判断「用户是否替换过输入图」的基准。
+            # （若拿新 factory_url 比较，两者恒等 → 未替换的输入图永远
+            #  跟不上新工厂图，替换过的反而可能在巧合时被误重置。）
+            old_factory = existing.factory_image_url
             existing.factory_image_url = factory_url
-            # 输入图：已被用户替换（input != factory）则保留，否则跟随工厂图
-            if existing.input_image_url == existing.factory_image_url or not existing.input_image_url:
+            # 输入图：已被用户替换（input != 旧工厂图）则保留自定义图，
+            # 否则跟随最新工厂图
+            if not existing.input_image_url or (
+                old_factory and existing.input_image_url == old_factory
+            ):
                 existing.input_image_url = factory_url
+            # 本次同步仍在缺失列表 → 刷新时间戳（only_missing 过滤依据）
+            existing.missing_synced_at = now
             existing.updated_at = now
         else:
             row = dict(item)
             row["factory_image_url"] = factory_url
+            row["missing_synced_at"] = now
             db.add(ErpOrderItem(**row, created_at=now))
         saved += 1
     await db.commit()

@@ -27,6 +27,7 @@ import {
   SIZE_OPTIONS,
 } from '../../constants'
 import { useOnlineStatus } from '../../hooks/useOnlineStatus'
+import type { ReactNode } from 'react'
 import type {
   ErpExtractUnit,
   ErpSessionStatus,
@@ -211,7 +212,9 @@ export default function FactoryAutomation() {
   const refreshUnits = useCallback(async () => {
     if (selectedSupplierIds.length === 0) return
     try {
-      const result = await erpOrdersList(selectedSupplierIds)
+      // only_missing：只显示仍在 ERP 缺失列表中的订单，
+      // 已上传/被人工补图的订单从待处理视图消失（历史视图仍可查）
+      const result = await erpOrdersList(selectedSupplierIds, '', true)
       setUnits(result.units)
     } catch {
       /* 静默失败，保留当前列表 */
@@ -318,7 +321,7 @@ export default function FactoryAutomation() {
     if (pollTimerRef.current) clearInterval(pollTimerRef.current)
     pollTimerRef.current = setInterval(async () => {
       try {
-        const result = await erpOrdersList(selectedSupplierIds)
+        const result = await erpOrdersList(selectedSupplierIds, '', true)
         setUnits(result.units)
         const active = result.units.filter(
           (u) => u.status === 'pending' || u.status === 'generating'
@@ -374,13 +377,34 @@ export default function FactoryAutomation() {
   const handleInputFile = async (files: FileList | null) => {
     const unit = replaceTargetRef.current
     replaceTargetRef.current = null
+    if (inputFileRef.current) inputFileRef.current.value = ''
     if (!unit || !files || files.length === 0) return
     // files 是 live FileList，必须先取 file 再清空 input，否则清空后 length 变 0
-    const file = files[0]
-    if (inputFileRef.current) inputFileRef.current.value = ''
+    await handleReplaceInputFile(unit, files[0], files.length)
+  }
+
+  /** 拖拽与文件选择器共用的输入图替换流程 */
+  const handleReplaceInputFile = async (
+    unit: ErpExtractUnit,
+    file: File,
+    selectedCount = 1,
+  ) => {
     if (!file.type.startsWith('image/')) {
       toast.warning('请选择图片文件')
       return
+    }
+    if (selectedCount > 1) {
+      toast.warning('一次只能替换一张输入图')
+      return
+    }
+    if (unit.status === 'uploaded') {
+      const ok = await confirm({
+        title: '替换已上传订单的输入图',
+        message: `该订单已上传 ERP。替换输入图只影响后续生成，不会自动更新 ERP 中已有的生成图。确定继续吗？`,
+        confirmLabel: '继续替换',
+        tone: 'primary',
+      })
+      if (!ok) return
     }
     setReplacingKey(unit.unit_key)
     try {
@@ -895,6 +919,9 @@ export default function FactoryAutomation() {
                 onRetry={() => void handleRetryUnit(unit)}
                 onPreview={() => setPreviewUnit(unit)}
                 onReplaceInput={() => handleReplaceInputClick(unit)}
+                onReplaceInputFile={(file, fileCount) =>
+                  void handleReplaceInputFile(unit, file, fileCount)
+                }
                 onResetInput={() => void handleResetInput(unit)}
                 replacingInput={replacingKey === unit.unit_key}
                 cropSaving={cropSavingKey === unit.unit_key}
@@ -988,6 +1015,9 @@ export default function FactoryAutomation() {
                     onRetry={() => void handleRetryUnit(unit)}
                     onPreview={() => setPreviewUnit(unit)}
                     onReplaceInput={() => handleReplaceInputClick(unit)}
+                    onReplaceInputFile={(file, fileCount) =>
+                      void handleReplaceInputFile(unit, file, fileCount)
+                    }
                     onResetInput={() => void handleResetInput(unit)}
                     replacingInput={replacingKey === unit.unit_key}
                     cropSaving={cropSavingKey === unit.unit_key}
@@ -1048,6 +1078,130 @@ export default function FactoryAutomation() {
   )
 }
 
+/** 输入图拖拽替换目标：包住缩略图/按钮列，拖入时显示替换遮罩 */
+function InputDropTarget({
+  replacing,
+  onFile,
+  children,
+}: {
+  replacing: boolean
+  onFile: (file: File, fileCount?: number) => void
+  children: ReactNode
+}) {
+  const [dragActive, setDragActive] = useState(false)
+  const dragDepthRef = useRef(0)
+
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragDepthRef.current += 1
+    setDragActive(true)
+  }
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.dataTransfer.dropEffect !== 'copy') e.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragDepthRef.current -= 1
+    if (dragDepthRef.current <= 0) {
+      dragDepthRef.current = 0
+      setDragActive(false)
+    }
+  }
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragDepthRef.current = 0
+    setDragActive(false)
+    const files = e.dataTransfer.files
+    if (!files || files.length === 0) return
+    onFile(files[0], files.length)
+  }
+
+  const active = dragActive && !replacing
+
+  return (
+    <div
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      style={{
+        position: 'relative',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '0.3rem',
+        borderRadius: 'var(--radius-md)',
+      }}
+    >
+      {children}
+      {active && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            inset: '-2px',
+            display: 'grid',
+            placeItems: 'center',
+            borderRadius: 'var(--radius-md)',
+            background: 'color-mix(in srgb, var(--accent) 82%, transparent)',
+            border: '1.5px dashed rgba(255,255,255,0.88)',
+            color: '#fff',
+            fontSize: '0.78rem',
+            fontWeight: 700,
+            textAlign: 'center',
+            padding: '0.35rem',
+            pointerEvents: 'none',
+            zIndex: 2,
+          }}
+        >
+          松开替换输入图
+        </div>
+      )}
+      {replacing && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            inset: '-2px',
+            display: 'grid',
+            placeItems: 'center',
+            gap: '0.25rem',
+            borderRadius: 'var(--radius-md)',
+            background: 'rgba(0,0,0,0.48)',
+            color: 'var(--text-1)',
+            fontSize: '0.78rem',
+            fontWeight: 700,
+            textAlign: 'center',
+            padding: '0.35rem',
+            pointerEvents: 'none',
+            zIndex: 2,
+          }}
+        >
+          <span
+            style={{
+              width: '15px',
+              height: '15px',
+              borderRadius: '50%',
+              border: '2px solid var(--text-2)',
+              borderTopColor: 'transparent',
+              animation: 'spin 0.8s linear infinite',
+            }}
+          />
+          替换中
+        </div>
+      )}
+    </div>
+  )
+}
+
 function UnitRow({
   unit,
   sizeMode,
@@ -1060,6 +1214,7 @@ function UnitRow({
   onRetry,
   onPreview,
   onReplaceInput,
+  onReplaceInputFile,
   onResetInput,
   replacingInput,
   cropSaving,
@@ -1079,6 +1234,7 @@ function UnitRow({
   onRetry: () => void
   onPreview: () => void
   onReplaceInput: () => void
+  onReplaceInputFile: (file: File, fileCount?: number) => void
   onResetInput: () => void
   replacingInput: boolean
   cropSaving: boolean
@@ -1126,7 +1282,10 @@ function UnitRow({
     >
       {/* 左：对比图区（输入图 ⇄ 生成图，点击放大对比） */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-4)', minWidth: 0 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem' }}>
+        <InputDropTarget
+          replacing={replacingInput}
+          onFile={onReplaceInputFile}
+        >
           <CompareThumb
             url={unit.input_image_url}
             label="输入图"
@@ -1139,7 +1298,7 @@ function UnitRow({
               variant="ghost"
               onClick={onReplaceInput}
               loading={replacingInput}
-              title="上传自定义图替换输入图（工厂图被家具遮挡时用清晰图）"
+              title="点击选择或拖拽图片替换输入图（工厂图被家具遮挡时用清晰图）"
             >
               替换
             </GlassButton>
@@ -1155,7 +1314,7 @@ function UnitRow({
               </GlassButton>
             )}
           </div>
-        </div>
+        </InputDropTarget>
         <div
           style={{
             display: 'grid',

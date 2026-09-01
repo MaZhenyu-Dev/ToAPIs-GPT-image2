@@ -483,13 +483,17 @@ export function erpGenerate(payload: ErpGenerateRequest): Promise<ErpGenerateRes
   })
 }
 
+// onlyMissing=true：严格模式，只返回仍在 ERP 缺失列表中的订单
+// （同步刷新 / 轮询走该模式，避免已从缺失列表消失的历史订单重新出现）
 export function erpOrdersList(
   supplierIds: number[] = [],
-  status = ''
+  status = '',
+  onlyMissing = false
 ): Promise<ErpOrdersPreviewResponse> {
   const qs = new URLSearchParams()
   if (supplierIds.length > 0) qs.set('supplier_ids', supplierIds.join(','))
   if (status) qs.set('status', status)
+  if (onlyMissing) qs.set('only_missing', '1')
   const query = qs.toString()
   return fetchJson<ErpOrdersPreviewResponse>(`/api/erp/orders${query ? `?${query}` : ''}`)
 }
@@ -538,5 +542,5 @@ export function extractHistory(limit = 50): Promise<ExtractHistoryResponse> {
 
 // 提取任务列表（按状态过滤） —— 前端轮询/刷新单元状态用
 export function fetchErpUnits(supplierIds: number[]): Promise<ErpExtractUnit[]> {
-  return erpOrdersList(supplierIds).then((r) => r.units)
+  return erpOrdersList(supplierIds, '', true).then((r) => r.units)
 }

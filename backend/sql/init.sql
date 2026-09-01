@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS `erp_order_items` (
     `generation_task_id` BIGINT NULL COMMENT '关联 generation_tasks.id（店铺+货号去重后共享一个任务）',
     `result_image_url` VARCHAR(500) NULL COMMENT '生成结果图 URL',
     `erp_uploaded_at` DATETIME NULL COMMENT '已上传回 ERP 的时间（非空=已上传）',
+    `missing_synced_at` DATETIME NULL COMMENT '最近一次同步时仍在 ERP 缺失列表的时间（待处理列表据此过滤幽灵订单）',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
     INDEX `idx_erp_order_items_supplier` (`supplier_id`),

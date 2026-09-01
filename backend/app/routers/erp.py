@@ -438,21 +438,31 @@ async def _clear_uploaded(db: AsyncSession, order_item_ids: list[int], now: date
 async def erp_orders_list(
     supplier_ids: str = "",
     status: str = "",
+    only_missing: str = "",
     db: AsyncSession = Depends(get_db),
 ):
     """待处理订单列表：按店铺 / 状态筛选生成单元。
 
     与 ERP 缺失列表同步：已上传（uploaded）的单元不在此展示，
     可在「生成历史」（GET /api/erp/history）中找回。
+
+    only_missing=1：严格模式，只显示仍处于「已同步进缺失列表」状态的订单
+    （missing_synced_at 非空且 erp_uploaded_at 为空）。同步按钮与轮询刷新
+    都走该模式，避免历史快照里的旧订单重新混进待处理列表。
     """
     ids = [int(x) for x in supplier_ids.split(",") if x.strip().isdigit()]
-    items = await erp_crud.get_items_by_suppliers(db, ids) if ids else []
-    if not ids:
+    if ids:
+        items = await erp_crud.get_items_by_suppliers(db, ids)
+    else:
         # 未传店铺时返回全部（近期按 created_at 倒序）
         result = await db.execute(
             select(ErpOrderItem).order_by(ErpOrderItem.created_at.desc())
         )
         items = list(result.scalars().all())
+
+    if only_missing == "1":
+        items = [i for i in items if i.missing_synced_at is not None]
+
     units = await _build_units(db, items)
     # 已上传的单元不再展示（待处理视图 = ERP 缺失列表）
     units = [u for u in units if u.status != "uploaded"]
