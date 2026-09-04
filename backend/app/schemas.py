@@ -603,7 +603,7 @@ CARPET_TYPES = Literal["corridor", "living_room", "general"]
 class TitleGenerateRequest(BaseModel):
     """批量标题生成请求：基于 N 个批次 × 第 K 张图创建 N 条 TitleTask。
 
-    - batch_ids: 用户选中的 N 个批次 ID（1-200 个，与前端 BATCH_PAGE_SIZE 对齐）
+    - batch_ids: 用户选中的 N 个批次 ID（1-500 个，与前端 BATCH_PAGE_SIZE 对齐）
     - carpet_type: 地毯类型，决定使用哪份内置 prompt（corridor / living_room / general）
     - image_index: 从每个批次中取第几张已完成任务的图（1-based）
     - model: 多模态模型 ID（白名单）
@@ -614,9 +614,9 @@ class TitleGenerateRequest(BaseModel):
     batch_ids: list[str] = Field(
         ...,
         min_length=1,
-        # 与前端批次选择 BATCH_PAGE_SIZE=200 对齐；超过 200 应该让前端分批
-        max_length=200,
-        description="待生成标题的批次 ID 列表（1-200 个）",
+        # 与前端批次选择 BATCH_PAGE_SIZE=500 对齐；超过 500 应该让前端分批
+        max_length=500,
+        description="待生成标题的批次 ID 列表（1-500 个）",
     )
     carpet_type: CARPET_TYPES = Field(
         default="general",

@@ -57,8 +57,8 @@ const statusColor: Record<string, string> = {
   failed: '#dc2626',
 }
 
-// 单页加载上限（够用，500 是后端硬上限，给 200 留足余量）
-const BATCH_PAGE_SIZE = 200
+// 单页加载上限（够用，1000 是后端硬上限，给 500 留足余量）
+const BATCH_PAGE_SIZE = 500
 // 列表默认高度
 const BATCH_LIST_MAX_HEIGHT = 320
 
@@ -392,13 +392,18 @@ export default function TitleGenerator() {
   useEffect(() => () => clearPolling(), [clearPolling])
 
   // 真正的生成逻辑（确认弹窗选「重新生成」或没有已有标题时调用）
-  const doGenerate = async () => {
+  // - batchIdsOverride 不传时生成全部选中批次（覆盖模式）
+  //   传入时只生成指定批次（增量模式：只补没有已有标题的批次）
+  const doGenerate = async (batchIdsOverride?: string[]) => {
+    const targetBatchIds =
+      batchIdsOverride ?? Array.from(selectedBatchIds)
+    if (targetBatchIds.length === 0) return
     setSubmitting(true)
     setError(null)
     try {
       const fallbackPrompt = carpetPrompts[carpetType] || DEFAULT_CARPET_TITLE_SYSTEM_PROMPT
       const payload = {
-        batch_ids: Array.from(selectedBatchIds),
+        batch_ids: targetBatchIds,
         carpet_type: carpetType,
         image_index: imageIndex,
         model,
@@ -516,23 +521,33 @@ export default function TitleGenerator() {
     setConfirmDialog(null)
     await doGenerate()
   }
-  const handleConfirmShowExisting = () => {
+  const handleConfirmShowExisting = async () => {
     if (!confirmDialog) return
-    // 把已有标题塞进 titleTasks，按 source_task_id 合并
+    const { existing, plannedBatchIds } = confirmDialog
+    // 1) 把已有标题塞进 titleTasks，按 source_task_id 合并
     setTitleTasks((prev) => {
       const map = new Map<number, TitleTask>()
       for (const t of prev) {
         if (t.source_task_id != null) map.set(t.source_task_id, t)
       }
-      for (const t of confirmDialog.existing) {
+      for (const t of existing) {
         if (t.source_task_id != null) map.set(t.source_task_id, t)
       }
       return Array.from(map.values()).sort((a, b) => b.id - a.id)
     })
-    setError(
-      `已展示数据库中已有的 ${confirmDialog.existing.length} 条标题（共 ${confirmDialog.planned.length} 个待生成中已存在的部分）`
+    // 2) 增量生成：只对没有已有标题的批次发起生成请求
+    const existingBatchIds = new Set(
+      existing.map((t) => t.batch_id).filter((b): b is string => !!b)
     )
-    setConfirmDialog(null)
+    const pendingBatchIds = plannedBatchIds.filter((b) => !existingBatchIds.has(b))
+    if (pendingBatchIds.length > 0) {
+      await doGenerate(pendingBatchIds)
+    } else {
+      setError(
+        `已展示数据库中已有的 ${existing.length} 条标题，所有所选批次均已生成过标题`
+      )
+      setConfirmDialog(null)
+    }
   }
   const handleConfirmCancel = () => {
     setConfirmDialog(null)
@@ -1284,9 +1299,9 @@ function ConfirmExistingDialog({
           <GlassButton
             variant="secondary"
             onClick={onShowExisting}
-            title="仅展示数据库中已有的标题，不发起新请求"
+            title="展示数据库中已有的标题，并对尚未生成标题的批次自动增量生成"
           >
-            展示已有
+            展示已有，补齐缺失
           </GlassButton>
           <GlassButton
             variant="danger"
