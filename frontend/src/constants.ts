@@ -23,6 +23,17 @@ export const SIZE_RESOLUTION_MAP: Record<string, Record<string, string>> = {
 export const EXTREME_SIZES = new Set(['4:1', '1:4', '8:1', '1:8'])
 export const EXTREME_RATIO_MODEL = 'gemini-3.1-flash-image-preview'
 
+// 2.5 普通版（flare / sunburst）不支持的宽高比（与后端 GPT25_MODELS /
+// GPT25_UNSUPPORTED_SIZES 对齐）：ToAPIs 文档仅支持 10 种比例，
+// 选中 2.5 模型时以下选项禁用；后端同步校验，非法组合直接 422
+export const GPT25_MODELS = new Set<string>(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])
+export const GPT25_UNSUPPORTED_SIZES = new Set(['2:1', '1:2', '9:21'])
+
+/** 指定模型是否支持该宽高比（2.5 不支持 2:1/1:2/9:21） */
+export function isSizeSupportedForModel(model: string, size: string): boolean {
+  return !(GPT25_MODELS.has(model) && GPT25_UNSUPPORTED_SIZES.has(size))
+}
+
 export const SIZE_OPTIONS = Object.keys(SIZE_RESOLUTION_MAP)
 export const DEFAULT_SIZE = '1:1'
 export const DEFAULT_RESOLUTION = '1k'
@@ -32,9 +43,21 @@ export const DEFAULT_RESOLUTION = '1k'
 // qualitySupported: 该模型是否支持精度档位（低/中/高）
 export const IMAGE_MODEL_OPTIONS = [
   {
+    id: 'gpt-image-2.5-flare',
+    label: 'GPT-Image-2.5 Flare',
+    description: '默认推荐 · 日常高速高质量 · 延迟比 GPT-Image-2 低约 50%',
+    qualitySupported: false,
+  },
+  {
+    id: 'gpt-image-2.5-sunburst',
+    label: 'GPT-Image-2.5 Sunburst',
+    description: '高端精密工作流 · 细节控制/多轮编辑原图保留更好 · 生成较慢',
+    qualitySupported: false,
+  },
+  {
     id: 'gpt-image-2',
     label: 'GPT-Image-2',
-    description: '默认模型 · 速度快',
+    description: '上一代模型 · 速度快',
     qualitySupported: false,
   },
   {
@@ -51,7 +74,7 @@ export const IMAGE_MODEL_OPTIONS = [
   },
 ] as const
 
-export const DEFAULT_IMAGE_MODEL = 'gpt-image-2'
+export const DEFAULT_IMAGE_MODEL = 'gpt-image-2.5-flare'
 export const DEFAULT_IMAGE_QUALITY = 'medium'
 
 // 精度档位（低/中/高 → low/medium/high）
@@ -68,6 +91,18 @@ const QUALITY_LABELS: Record<string, string> = {
   high: '高',
 }
 
+// 模型显示名映射（full：完整名；short：任务卡徽章等紧凑场景）
+const MODEL_DISPLAY_NAMES: Record<string, { full: string; short: string }> = {
+  'gpt-image-2.5-flare': { full: 'GPT-Image-2.5 Flare', short: '2.5 Flare' },
+  'gpt-image-2.5-sunburst': { full: 'GPT-Image-2.5 Sunburst', short: '2.5 Sunburst' },
+  'gpt-image-2': { full: 'GPT-Image-2', short: 'GPT-Image-2' },
+  'gpt-image-2-vip': { full: 'GPT-Image-2 VIP', short: 'VIP' },
+  'gemini-3.1-flash-image-preview': {
+    full: 'Gemini 3.1 Flash Image Preview',
+    short: 'Gemini Preview',
+  },
+}
+
 /**
  * 模型显示名：
  * - full：完整名（Lightbox 元信息标签等完整展示场景）
@@ -79,18 +114,8 @@ export function getModelDisplayName(
   quality?: string | null,
   variant: 'full' | 'short' = 'full'
 ): string {
-  const base =
-    model === 'gpt-image-2'
-      ? 'GPT-Image-2'
-      : model === 'gpt-image-2-vip'
-        ? variant === 'short'
-          ? 'VIP'
-          : 'GPT-Image-2 VIP'
-        : model === 'gemini-3.1-flash-image-preview'
-          ? variant === 'short'
-            ? 'Gemini Preview'
-            : 'Gemini 3.1 Flash Image Preview'
-          : model || 'GPT-Image-2'
+  const names = model ? MODEL_DISPLAY_NAMES[model] : undefined
+  const base = names ? names[variant] : model || 'GPT-Image-2'
   const q = quality ? QUALITY_LABELS[quality] ?? quality : null
   return q ? `${base} · ${q}` : base
 }

@@ -9,9 +9,13 @@ import {
   uploadImage,
 } from '../api'
 import {
+  DEFAULT_IMAGE_MODEL,
+  DEFAULT_IMAGE_QUALITY,
   DEFAULT_RESOLUTION,
   DEFAULT_SIZE,
   getModelDisplayName,
+  IMAGE_MODEL_OPTIONS,
+  IMAGE_QUALITY_OPTIONS,
   MAX_PRODUCT_SWAP_COUNT,
   MIN_PRODUCT_SWAP_COUNT,
 } from '../constants'
@@ -42,6 +46,7 @@ import ParameterSelector from './ParameterSelector'
 import ProgressBar from './ui/ProgressBar'
 import ProductThumbnailList, { type ProductItem } from './ProductThumbnailList'
 import RegenerateDialog from './batch/RegenerateDialog'
+import SegmentedControl from './ui/SegmentedControl'
 import StatCard from './ui/StatCard'
 import { useToast } from './ui/Toast'
 import { IconRefresh } from './ui/Icon'
@@ -66,11 +71,17 @@ export default function ProductSwapper() {
   const [prompt, setPrompt] = useState('')
   const [size, setSize] = useState(DEFAULT_SIZE)
   const [resolution, setResolution] = useState(DEFAULT_RESOLUTION)
+  // 生图模型 + 精度（默认 gpt-image-2.5-flare；quality 仅部分模型支持）
+  const [model, setModel] = useState<ImageModelId>(DEFAULT_IMAGE_MODEL)
+  const [quality, setQuality] = useState<ImageQuality>(DEFAULT_IMAGE_QUALITY)
   const { prefix, handlePrefixChange, isPrefixValid, previewBatchId } = useBatchPrefix()
 
   const templateUrl = templateUrls[0] || ''
   const templateInProducts =
     !!templateUrl && products.some((p) => p.url === templateUrl)
+
+  const selectedModel = IMAGE_MODEL_OPTIONS.find((m) => m.id === model)
+  const qualitySupported = selectedModel?.qualitySupported ?? false
 
   const [batch, setBatch] = useState<BatchStatusResponse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -114,6 +125,8 @@ export default function ProductSwapper() {
         size,
         resolution,
         prefix,
+        model,
+        ...(qualitySupported ? { quality } : {}),
       })
       const status = await fetchOnce(response.batch_id)
       if (status) {
@@ -489,11 +502,52 @@ export default function ProductSwapper() {
         <ParameterSelector
           size={size}
           resolution={resolution}
+          model={model}
           onChange={({ size, resolution }) => {
             setSize(size)
             setResolution(resolution)
           }}
         />
+
+        <div className="row">
+          <div className="form-group">
+            <label htmlFor="swap-model">生图模型</label>
+            <select
+              id="swap-model"
+              value={model}
+              onChange={(e) => setModel(e.target.value as ImageModelId)}
+              disabled={loading}
+            >
+              {IMAGE_MODEL_OPTIONS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            {selectedModel && <div className="hint">{selectedModel.description}</div>}
+          </div>
+
+          {qualitySupported && (
+            <div className="form-group">
+              <label>精度档位</label>
+              <SegmentedControl<ImageQuality>
+                ariaLabel="产品替换精度档位"
+                value={quality}
+                onChange={setQuality}
+                options={IMAGE_QUALITY_OPTIONS.map((q) => ({
+                  value: q.id,
+                  label: q.label,
+                  title:
+                    q.id === 'low'
+                      ? '快速省钱，适合草稿/预览'
+                      : q.id === 'high'
+                        ? '最高精度，适合正式出图'
+                        : '平衡速度与质量',
+                }))}
+              />
+            </div>
+          )}
+        </div>
 
         <div className="form-group" style={{ marginTop: '0.5rem' }}>
           <label htmlFor="swap-prefix">批次号前缀</label>

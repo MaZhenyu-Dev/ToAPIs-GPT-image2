@@ -362,6 +362,7 @@ export default function CustomExtract() {
             <ParameterSelector
               size={size}
               resolution={resolution}
+              model={model}
               onChange={({ size: s, resolution: r }) => {
                 setSize(s)
                 setResolution(r)

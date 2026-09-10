@@ -64,7 +64,7 @@ interface UseFolderBatchOptions {
   prefix: string
   todayBatchInfo: TodayBatchCount | null
   refreshTodayCount: (prefix: string) => Promise<void>
-  /** 生图模型（默认 gpt-image-2）与精度档位（可选） */
+  /** 生图模型（默认 gpt-image-2.5-flare）与精度档位（可选） */
   model?: ImageModelId
   quality?: ImageQuality
   /**

@@ -20,6 +20,8 @@ from backend.app.prompts import EXTRACT_PROMPT_LABELS, EXTRACT_PROMPTS
 from backend.app.schemas import (
     EXTREME_RATIO_MODEL,
     EXTREME_SIZES,
+    GPT25_MODELS,
+    GPT25_UNSUPPORTED_SIZES,
     CropConfigRequest,
     CropConfigResponse,
     ErpExtractUnit,
@@ -373,9 +375,15 @@ async def erp_generate(request: ErpGenerateRequest, db: AsyncSession = Depends(g
                 size = override
 
         # 极端宽高比（4:1/8:1 等）只有 gemini-3.1-flash-image-preview 支持：
-        # 该货号自动切换模型，其余货号沿用用户选择的模型
-        # （走廊地毯已强制 1:1，不会命中极端比例分支）
-        task_model = EXTREME_RATIO_MODEL if size in EXTREME_SIZES else request.model
+        # 该货号自动切换模型；2.5 普通版不支持的比例（2:1/1:2/9:21）自动回退
+        # gpt-image-2（保留订单原始比例）；其余货号沿用用户选择的模型
+        # （走廊地毯已强制 1:1，不会命中上述分支）
+        if size in EXTREME_SIZES:
+            task_model = EXTREME_RATIO_MODEL
+        elif request.model in GPT25_MODELS and size in GPT25_UNSUPPORTED_SIZES:
+            task_model = "gpt-image-2"
+        else:
+            task_model = request.model
 
         # 下载输入图（ERP CDN，防盗链）→ 转传到 ToAPIs
         try:
@@ -459,12 +467,16 @@ async def erp_generate(request: ErpGenerateRequest, db: AsyncSession = Depends(g
                 goods_sn=unit.goods_sn,
                 generation_task_id=task.id,
                 success=True,
-                # 标记实际使用的模型（极端比例货号会自动切到 gemini）
+                # 标记实际使用的模型（极端比例切 gemini / 2.5 不支持的比例切 gpt-image-2）
                 model=task.model,
                 message=(
                     f"极端宽高比 {size}，已自动使用 {task_model}"
                     if size in EXTREME_SIZES
-                    else ""
+                    else (
+                        f"宽高比 {size} 不受 {request.model} 支持，已自动使用 {task_model}"
+                        if task_model != request.model
+                        else ""
+                    )
                 ),
             )
         )

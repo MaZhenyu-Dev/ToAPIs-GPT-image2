@@ -32,6 +32,8 @@ export interface VariantGroupListItem {
 
 // 生成模型（与后端 schemas.py IMAGE_MODEL 白名单对齐）
 export type ImageModelId =
+  | 'gpt-image-2.5-flare'
+  | 'gpt-image-2.5-sunburst'
   | 'gpt-image-2'
   | 'gpt-image-2-vip'
   | 'gemini-3.1-flash-image-preview'
@@ -54,7 +56,7 @@ export interface BatchGenerateRequest {
   // 批次号前缀：1-10 位 A-Z / 0-9，默认 "MZY"
   // 最终 batch_id 格式：{prefix}{MMDD}{seq}，MMDD 为北京时间月日，seq 为当天该 prefix 下的序号
   prefix?: string
-  // 生图模型 + 精度档位（默认 gpt-image-2；quality 仅部分模型支持）
+  // 生图模型 + 精度档位（默认 gpt-image-2.5-flare；quality 仅部分模型支持）
   model?: ImageModelId
   quality?: ImageQuality
   // 自动接力套图：裂变批次全部结束后，自动用其已完成图片创建套图批次（可选）

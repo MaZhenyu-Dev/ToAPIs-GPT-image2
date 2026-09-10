@@ -56,11 +56,14 @@ class GenerationTask(Base):
     mode: Mapped[str] = mapped_column(String(16), nullable=False)
     size: Mapped[str] = mapped_column(String(10), nullable=False)
     resolution: Mapped[str] = mapped_column(String(5), nullable=False)
-    # 生成模型：gpt-image-2（默认）/ gpt-image-2-vip / gemini-3.1-flash-image-preview
+    # 生成模型：gpt-image-2.5-flare（默认）/ gpt-image-2.5-sunburst /
+    # gpt-image-2 / gpt-image-2-vip / gemini-3.1-flash-image-preview
     # 持久化到任务记录，重试/重新生成时原样复用，避免丢模型
-    model: Mapped[str] = mapped_column(String(64), nullable=False, default="gpt-image-2")
+    model: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="gpt-image-2.5-flare"
+    )
     # 精度档位（low/medium/high）：仅 gpt-image-2-vip 支持（quality 参数）。
-    # 不支持的模型（gpt-image-2 / gemini 中转版）为 NULL
+    # 不支持的模型（2.5 普通版 / gpt-image-2 / gemini 中转版）为 NULL
     quality: Mapped[str | None] = mapped_column(String(10), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
     progress: Mapped[int] = mapped_column(default=0, nullable=False)
@@ -79,8 +82,8 @@ class GenerationTask(Base):
     # 用途：近期批次总览页据此显示「重试 ×N」徽章（列表排序完全按批次号，
     # 重试刷新 created_at 不会让批次移动位置）。
     retried_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    # 自动重试已执行次数（0-3）：任务失败后按模型阶梯自动重试
-    # （gpt-image-2 → gpt-image-2-vip/medium → gemini-3.1-flash-image-preview）。
+    # 自动重试已执行次数（0-4）：任务失败后按模型阶梯自动重试
+    # （gpt-image-2.5-sunburst → gpt-image-2.5-flare → gpt-image-2 → gemini-3.1-flash-image-preview）。
     # 与 retried_count 语义分离（那是用户手动重试计数，列表"重试过"标记依赖它）。
     auto_retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # 白边裁剪：生成时的配置快照（crop_enabled/crop_threshold）+ 裁剪结果

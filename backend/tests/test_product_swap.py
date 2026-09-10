@@ -214,7 +214,8 @@ def test_build_payload_product_swap_uses_task_prompt_and_pair():
         # 直接构造一个不查 DB 的 variant 关系（_build_payload 中 task.variant 不为 None 时
         # 走 variant.prompt_content 分支；为 None 时走 task.prompt 分支）
         payload = service._build_payload(task, carrier)
-        assert payload["model"] == "gpt-image-2"
+        # carrier 未显式指定 model → 使用 schema 默认模型（gpt-image-2.5-flare）
+        assert payload["model"] == "gpt-image-2.5-flare"
         assert payload["n"] == 1
         assert payload["size"] == "1:1"
         assert payload["resolution"] == "1k"

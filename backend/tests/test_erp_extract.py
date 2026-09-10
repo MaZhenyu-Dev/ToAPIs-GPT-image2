@@ -328,11 +328,31 @@ def test_erp_generate_request_validation():
     except ValidationError as e:
         assert "fixed_size" in str(e)
 
-    # fixed 模式带 fixed_size → 通过
+    # fixed 模式带 fixed_size → 通过（默认模型 2.5 支持的比例）
     req2 = ErpGenerateRequest(
-        supplier_ids=[2], prompt="x", size_mode="fixed", fixed_size="9:21"
+        supplier_ids=[2], prompt="x", size_mode="fixed", fixed_size="16:9"
     )
-    assert req2.fixed_size == "9:21"
+    assert req2.fixed_size == "16:9"
+
+    # 2.5 普通版不支持的比例（2:1/1:2/9:21）：fixed_size / size_overrides 均拒绝；
+    # 换回 gpt-image-2 则允许
+    for kwargs in (
+        {"size_mode": "fixed", "fixed_size": "9:21"},
+        {"size_overrides": {"1867010": "2:1"}},
+    ):
+        try:
+            ErpGenerateRequest(supplier_ids=[2], prompt="x", **kwargs)
+            assert False, f"2.5 不支持的比例应被拒绝: {kwargs}"
+        except ValidationError:
+            pass
+    req_gpt2 = ErpGenerateRequest(
+        supplier_ids=[2],
+        prompt="x",
+        size_mode="fixed",
+        fixed_size="9:21",
+        model="gpt-image-2",
+    )
+    assert req_gpt2.fixed_size == "9:21"
 
     # unit_keys 可选（单独生成某几个货号）
     req3 = ErpGenerateRequest(
@@ -377,6 +397,18 @@ def test_extract_generate_request_validation():
         ExtractGenerateRequest(
             image_urls=[f"https://cdn.example.com/{i}.jpg" for i in range(21)],
             prompt="x",
+        )
+        assert False, "应该被拒绝"
+    except ValidationError:
+        pass
+
+    # 2.5 普通版不支持的比例 → 直接拒绝（gpt-image-2-vip 不受此限制）
+    try:
+        ExtractGenerateRequest(
+            image_urls=["https://cdn.example.com/a.jpg"],
+            prompt="x",
+            size="2:1",
+            model="gpt-image-2.5-flare",
         )
         assert False, "应该被拒绝"
     except ValidationError:

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getModelDisplayName } from '../../constants'
+import { DEFAULT_IMAGE_MODEL, getModelDisplayName } from '../../constants'
 import { sizeToAspectRatio } from '../../lib/batchDownloads'
 import type { GenerationTaskItem } from '../../types'
 import Badge from '../ui/Badge'
@@ -64,7 +64,7 @@ export default function BatchTaskCard({
       <div className="task-card-head">
         <span className="task-card-index">#{index + 1}</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          {task.model && task.model !== 'gpt-image-2' && (
+          {task.model && task.model !== DEFAULT_IMAGE_MODEL && (
             <span
               className="task-card-model"
               title={getModelDisplayName(task.model, task.quality)}
@@ -135,7 +135,7 @@ export default function BatchTaskCard({
         </div>
       )}
       {isFailed && task.auto_retry_count > 0 && (
-        <div className="task-card-error" title="自动重试已全部执行完毕（gpt-image-2 → VIP → Gemini），可手动重新生成或批次级重试">
+        <div className="task-card-error" title="自动重试已执行完毕（2.5 Sunburst → 2.5 Flare → GPT-Image-2 → Gemini），可手动重新生成或批次级重试">
           已自动重试 {task.auto_retry_count} 次，仍失败 · 可手动重试
         </div>
       )}

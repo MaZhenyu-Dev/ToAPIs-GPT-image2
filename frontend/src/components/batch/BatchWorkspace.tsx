@@ -79,7 +79,7 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
   // 自动接力套图配置（非空 = 已启用；裂变批次完成后自动创建套图批次）
   const [relayConfig, setRelayConfig] = useState<AutoRelayConfig | null>(null)
   const [relayDialogOpen, setRelayDialogOpen] = useState(false)
-  // 生图模型 + 精度（默认 gpt-image-2；quality 仅部分模型支持）
+  // 生图模型 + 精度（默认 gpt-image-2.5-flare；quality 仅部分模型支持）
   const [imageModel, setImageModel] = useState<ImageModelId>(DEFAULT_IMAGE_MODEL)
   const [quality, setQuality] = useState<ImageQuality>(DEFAULT_IMAGE_QUALITY)
   const {
@@ -413,6 +413,7 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
               compact
               size={size}
               resolution={resolution}
+              model={imageModel}
               onChange={({ size: s, resolution: r }) => {
                 setSize(s)
                 setResolution(r)

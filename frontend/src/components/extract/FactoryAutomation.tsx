@@ -22,8 +22,10 @@ import {
   DEFAULT_IMAGE_MODEL,
   DEFAULT_RESOLUTION,
   DEFAULT_SIZE,
-  EXTREME_RATIO_MODEL,
   EXTREME_SIZES,
+  GPT25_MODELS,
+  GPT25_UNSUPPORTED_SIZES,
+  isSizeSupportedForModel,
   SIZE_OPTIONS,
 } from '../../constants'
 import { useOnlineStatus } from '../../hooks/useOnlineStatus'
@@ -117,6 +119,23 @@ export default function FactoryAutomation() {
   const [regenerateTarget, setRegenerateTarget] = useState<GenerationTaskItem | null>(null)
   const [regeneratingTaskId, setRegeneratingTaskId] = useState<number | null>(null)
   const [previewUnit, setPreviewUnit] = useState<ErpExtractUnit | null>(null)
+
+  // 2.5 普通版不支持的比例：统一比例回退默认；残留的比例覆盖清理
+  // （否则提交时后端会因非法组合整体 422）
+  useEffect(() => {
+    if (!isSizeSupportedForModel(model, fixedSize)) setFixedSize(DEFAULT_SIZE)
+  }, [model, fixedSize])
+
+  useEffect(() => {
+    if (!GPT25_MODELS.has(model)) return
+    setSizeOverrides((prev) => {
+      const next: Record<string, string> = {}
+      for (const [key, val] of Object.entries(prev)) {
+        if (!GPT25_UNSUPPORTED_SIZES.has(val)) next[key] = val
+      }
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next
+    })
+  }, [model])
 
   // 会话过期时重新探测（登录后刷新）
   const sessionExpiredRef = useRef(false)
@@ -271,9 +290,9 @@ export default function FactoryAutomation() {
       response.results
         .filter((r) => !r.success)
         .forEach((r) => toast.error(`生成失败 ${r.goods_sn}: ${r.message}`))
-      // 极端比例货号自动切模型的提示
+      // 自动切模型的提示（极端比例切 gemini / 2.5 不支持比例切 gpt-image-2）
       response.results
-        .filter((r) => r.success && r.model === EXTREME_RATIO_MODEL && r.message)
+        .filter((r) => r.success && r.message)
         .forEach((r) => toast.info(`${r.goods_sn}: ${r.message}`))
       await refreshUnits()
       if (response.succeeded > 0) {
@@ -310,12 +329,26 @@ export default function FactoryAutomation() {
         (sizeMode === 'fixed' ? fixedSize : u.mapped_ratio)
       return EXTREME_SIZES.has(size)
     }).length
+    // 2.5 普通版不支持的比例（2:1/1:2/9:21）：该货号会自动回退 gpt-image-2
+    const gpt25FallbackCount = GPT25_MODELS.has(model)
+      ? pendingUnits.filter((u) => {
+          if (isCorridorSize(u.size)) return false
+          const size =
+            sizeOverrides[String(u.representative_order_item_id)] ??
+            (sizeMode === 'fixed' ? fixedSize : u.mapped_ratio)
+          return GPT25_UNSUPPORTED_SIZES.has(size) && !EXTREME_SIZES.has(size)
+        }).length
+      : 0
     const ok = await confirm({
       title: '确认开始生成',
       message: `将生成 ${pendingUnits.length} 张产品图（${selectedSupplierIds.length} 家店铺），
 每个货号仅生成一张（同店铺同货号自动去重）。生成会消耗 ToAPIs 额度，确定继续吗？${
         extremeCount > 0
           ? `\n\n注意：其中 ${extremeCount} 个货号使用极端宽高比（4:1/8:1），将自动使用 Gemini 模型生成。`
+          : ''
+      }${
+        gpt25FallbackCount > 0
+          ? `\n\n注意：其中 ${gpt25FallbackCount} 个货号的比例不受所选 2.5 模型支持，将自动使用 GPT-Image-2 生成。`
           : ''
       }`,
       confirmLabel: '开始生成',
@@ -828,6 +861,7 @@ export default function FactoryAutomation() {
       <ParameterSelector
         size={size}
         resolution={resolution}
+        model={model}
         onChange={({ size: s, resolution: r }) => {
           setSize(s)
           setResolution(r)
@@ -850,11 +884,19 @@ export default function FactoryAutomation() {
             onChange={(e) => setFixedSize(e.target.value)}
             style={{ marginTop: '0.4rem' }}
           >
-            {SIZE_OPTIONS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
+            {SIZE_OPTIONS.map((s) => {
+              const disabled = !isSizeSupportedForModel(model, s)
+              return (
+                <option
+                  key={s}
+                  value={s}
+                  disabled={disabled}
+                  title={disabled ? 'GPT-Image-2.5 不支持该比例' : undefined}
+                >
+                  {s}
+                </option>
+              )
+            })}
           </select>
         )}
       </div>
@@ -925,6 +967,7 @@ export default function FactoryAutomation() {
               <UnitRow
                 key={unit.unit_key}
                 unit={unit}
+                model={model}
                 sizeMode={sizeMode}
                 sizeOverrides={sizeOverrides}
                 onSizeOverride={(sizeKey) =>
@@ -1023,6 +1066,7 @@ export default function FactoryAutomation() {
                   <UnitRow
                     key={unit.unit_key}
                     unit={unit}
+                    model={model}
                     sizeMode={sizeMode}
                     sizeOverrides={{}}
                     onSizeOverride={() => {}}
@@ -1222,6 +1266,7 @@ function InputDropTarget({
 
 function UnitRow({
   unit,
+  model,
   sizeMode,
   sizeOverrides,
   onSizeOverride,
@@ -1242,6 +1287,7 @@ function UnitRow({
   showTime = false,
 }: {
   unit: ErpExtractUnit
+  model: string
   sizeMode: 'auto' | 'fixed'
   sizeOverrides: Record<string, string>
   onSizeOverride: (sizeKey: string) => void
@@ -1422,11 +1468,19 @@ function UnitRow({
                   onChange={(e) => onSizeOverride(e.target.value)}
                   style={{ width: '76px', padding: '0.15rem 0.4rem', fontSize: '0.78rem' }}
                 >
-                  {SIZE_OPTIONS.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
+                  {SIZE_OPTIONS.map((s) => {
+                    const disabled = !isSizeSupportedForModel(model, s)
+                    return (
+                      <option
+                        key={s}
+                        value={s}
+                        disabled={disabled}
+                        title={disabled ? 'GPT-Image-2.5 不支持该比例' : undefined}
+                      >
+                        {s}
+                      </option>
+                    )
+                  })}
                 </select>
                 <span
                   className="hint"

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
+  DEFAULT_IMAGE_MODEL,
   DEFAULT_IMAGE_QUALITY,
   DEFAULT_RESOLUTION,
   DEFAULT_SIZE,
@@ -8,6 +9,7 @@ import {
   EXTREME_SIZES,
   IMAGE_MODEL_OPTIONS,
   IMAGE_QUALITY_OPTIONS,
+  isSizeSupportedForModel,
   SIZE_RESOLUTION_MAP,
 } from '../../constants'
 import type { GenerationTaskItem, ImageModelId, ImageQuality } from '../../types'
@@ -40,7 +42,7 @@ export default function RegenerateDialog({
   onClose,
   showSizeResolution = false,
 }: RegenerateDialogProps) {
-  const [model, setModel] = useState<ImageModelId>('gpt-image-2')
+  const [model, setModel] = useState<ImageModelId>(DEFAULT_IMAGE_MODEL)
   const [quality, setQuality] = useState<ImageQuality>(DEFAULT_IMAGE_QUALITY)
   const [size, setSize] = useState(DEFAULT_SIZE)
   const [resolution, setResolution] = useState(DEFAULT_RESOLUTION)
@@ -70,6 +72,20 @@ export default function RegenerateDialog({
     [model]
   )
   const qualitySupported = selectedModel?.qualitySupported ?? false
+
+  // 模型与比例兼容兜底：切到 2.5 且当前比例（可编辑时）不被支持 → 回退 1:1
+  // （showSizeResolution=false 时尺寸不可改，对应模型选项已禁用，不会走到这里）
+  useEffect(() => {
+    if (!showSizeResolution) return
+    if (!isSizeSupportedForModel(model, size)) {
+      const available = Object.keys(SIZE_RESOLUTION_MAP[DEFAULT_SIZE] || {})
+      setSize(DEFAULT_SIZE)
+      if (!available.includes(resolution)) {
+        setResolution(available[0] || DEFAULT_RESOLUTION)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model, size, resolution, showSizeResolution])
 
   if (!task) return null
 
@@ -105,11 +121,23 @@ export default function RegenerateDialog({
             onChange={(e) => setModel(e.target.value as ImageModelId)}
             autoFocus
           >
-            {IMAGE_MODEL_OPTIONS.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
+            {IMAGE_MODEL_OPTIONS.map((m) => {
+              // 尺寸不可改时（批量/产品替换）：禁用不支持任务当前比例的模型
+              const disabled =
+                !showSizeResolution &&
+                !!task?.size &&
+                !isSizeSupportedForModel(m.id, task.size)
+              return (
+                <option
+                  key={m.id}
+                  value={m.id}
+                  disabled={disabled}
+                  title={disabled ? `当前任务比例 ${task?.size} 不受该模型支持` : undefined}
+                >
+                  {m.label}
+                </option>
+              )
+            })}
           </select>
         </div>
 
@@ -154,11 +182,19 @@ export default function RegenerateDialog({
                   }
                 }}
               >
-                {Object.keys(SIZE_RESOLUTION_MAP).map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
+                {Object.keys(SIZE_RESOLUTION_MAP).map((s) => {
+                  const disabled = !isSizeSupportedForModel(model, s)
+                  return (
+                    <option
+                      key={s}
+                      value={s}
+                      disabled={disabled}
+                      title={disabled ? 'GPT-Image-2.5 不支持该比例' : undefined}
+                    >
+                      {s}
+                    </option>
+                  )
+                })}
               </select>
               {EXTREME_SIZES.has(size) && (
                 <div className="hint" style={{ color: 'var(--warning)' }}>

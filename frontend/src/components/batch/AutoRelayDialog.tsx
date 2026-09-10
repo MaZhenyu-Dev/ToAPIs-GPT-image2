@@ -191,6 +191,7 @@ export default function AutoRelayDialog({
         <ParameterSelector
           size={size}
           resolution={resolution}
+          model={model}
           onChange={({ size: s, resolution: r }) => {
             setSize(s)
             setResolution(r)

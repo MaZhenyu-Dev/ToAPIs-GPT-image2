@@ -1,4 +1,10 @@
-import { DEFAULT_RESOLUTION, SIZE_RESOLUTION_MAP } from '../constants'
+import { useEffect } from 'react'
+import {
+  DEFAULT_RESOLUTION,
+  DEFAULT_SIZE,
+  isSizeSupportedForModel,
+  SIZE_RESOLUTION_MAP,
+} from '../constants'
 
 interface Props {
   size: string
@@ -6,6 +12,8 @@ interface Props {
   onChange: (params: { size: string; resolution: string }) => void
   /** 紧凑模式：适配工作流条布局（无输出尺寸提示，固定窄宽） */
   compact?: boolean
+  /** 生图模型：2.5 普通版不支持的比例（2:1/1:2/9:21）选项禁用 */
+  model?: string
 }
 
 export default function ParameterSelector({
@@ -13,6 +21,7 @@ export default function ParameterSelector({
   resolution,
   onChange,
   compact = false,
+  model,
 }: Props) {
   const sizeOptions = Object.keys(SIZE_RESOLUTION_MAP)
   const resolutionOptions = Object.keys(SIZE_RESOLUTION_MAP[size] || {})
@@ -25,6 +34,36 @@ export default function ParameterSelector({
     onChange({ size: newSize, resolution: newResolution })
   }
 
+  // 切换到 2.5 模型后，若当前比例不被支持则回退 1:1
+  // （覆盖"先选 2:1/1:2/9:21 再切 2.5"的残留状态，选项此时已禁用）
+  useEffect(() => {
+    if (model && !isSizeSupportedForModel(model, size)) {
+      const available = Object.keys(SIZE_RESOLUTION_MAP[DEFAULT_SIZE] || {})
+      onChange({
+        size: DEFAULT_SIZE,
+        resolution: available.includes(resolution)
+          ? resolution
+          : available[0] || DEFAULT_RESOLUTION,
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model, size, resolution])
+
+  const renderSizeOptions = () =>
+    sizeOptions.map((s) => {
+      const disabled = !!model && !isSizeSupportedForModel(model, s)
+      return (
+        <option
+          key={s}
+          value={s}
+          disabled={disabled}
+          title={disabled ? 'GPT-Image-2.5 不支持该比例' : undefined}
+        >
+          {s}
+        </option>
+      )
+    })
+
   if (compact) {
     return (
       <>
@@ -35,11 +74,7 @@ export default function ParameterSelector({
             value={size}
             onChange={(e) => handleSizeChange(e.target.value)}
           >
-            {sizeOptions.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
+            {renderSizeOptions()}
           </select>
         </div>
 
@@ -72,11 +107,7 @@ export default function ParameterSelector({
           value={size}
           onChange={(e) => handleSizeChange(e.target.value)}
         >
-          {sizeOptions.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
+          {renderSizeOptions()}
         </select>
       </div>
 

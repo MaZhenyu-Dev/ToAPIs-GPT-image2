@@ -25,7 +25,8 @@ from backend.app.schemas import (
     AUTO_RETRY_MODELS,
     AUTO_RETRY_QUALITY,
     EXTREME_SIZES,
-    MAX_AUTO_RETRY,
+    GPT25_MODELS,
+    GPT25_UNSUPPORTED_SIZES,
     QUALITY_SUPPORTED_MODELS,
     BatchGenerateRequest,
     I2iMultiCreateRequest,
@@ -430,7 +431,7 @@ class BatchGeneratorService:
             if not input_url:
                 continue
             task_model = item.get("model") or model
-            # gemini 模型不支持 quality 档位
+            # 不支持 quality 的模型（2.5 普通版 / gpt-image-2 / gemini）清空精度
             task_quality = quality if task_model in QUALITY_SUPPORTED_MODELS else None
             tasks.append(
                 GenerationTask(
@@ -564,18 +565,30 @@ class BatchGeneratorService:
 
         return retried_batch_ids, retried_task_count, skipped_batch_ids
 
+    def _auto_retry_ladder(self, size: str) -> list[str]:
+        """当前任务宽高比可用的自动重试阶梯。
+
+        2.5 不支持的宽高比（2:1/1:2/9:21）：跳过阶梯中的 2.5 模型，
+        避免用必然失败的模型浪费调用（gpt-image-2/gemini 均支持这些比例）。
+        """
+        if size in GPT25_UNSUPPORTED_SIZES:
+            return [m for m in AUTO_RETRY_MODELS if m not in GPT25_MODELS]
+        return AUTO_RETRY_MODELS
+
     async def maybe_auto_retry(
         self, db: AsyncSession, task: GenerationTask
     ) -> bool:
         """任务失败后的自动重试：按模型阶梯逐级升级换模型重新提交。
 
-        阶梯（AUTO_RETRY_MODELS，共 3 次）：
-        - 第 1 次：gpt-image-2（原配置）
-        - 第 2 次：gpt-image-2-vip + quality=medium
-        - 第 3 次：gemini-3.1-flash-image-preview
+        阶梯（AUTO_RETRY_MODELS，共 4 次）：
+        - 第 1 次：gpt-image-2.5-sunburst
+        - 第 2 次：gpt-image-2.5-flare
+        - 第 3 次：gpt-image-2
+        - 第 4 次：gemini-3.1-flash-image-preview
 
         规则：
-        - auto_retry_count >= 3 不再自动重试（保留用户手动重试；手动重试不清零计数）
+        - 次数达到可用阶梯长度后不再自动重试（保留用户手动重试；手动重试不清零计数）
+        - 2.5 不支持的宽高比（2:1/1:2/9:21）自动跳过阶梯中的 2.5 模型
         - 防重入：锁内重新读取任务，仅当仍为 failed 且未达上限才触发
         - 重置时刷新 created_at（轮询器 5 分钟超时从本次重试重新计时）
         - 换模型后更新 task.model/quality：任务卡徽章展示新模型，
@@ -583,26 +596,26 @@ class BatchGeneratorService:
 
         返回是否触发了重试。
         """
-        if task.auto_retry_count >= MAX_AUTO_RETRY:
+        if task.auto_retry_count >= len(self._auto_retry_ladder(task.size)):
             return False
 
-        # 极端宽高比任务跳过自动重试：重试阶梯（gpt→vip→gemini preview）
-        # 都不支持 4:1/8:1，自动重试必然再次失败（浪费调用）。
-        # 由用户手动重试（手动重试会用任务当前模型=官方 gemini 渠道）。
+        # 极端宽高比任务跳过自动重试：重试阶梯都不支持 4:1/8:1，
+        # 自动重试必然再次失败（浪费调用）。
+        # 由用户手动重试（手动重试会用任务当前模型=gemini 渠道）。
         if task.size in EXTREME_SIZES:
             return False
 
         async with self._auto_retry_lock:
             fresh = await db.get(GenerationTask, task.id)
-            if (
-                fresh is None
-                or fresh.status != "failed"
-                or fresh.auto_retry_count >= MAX_AUTO_RETRY
-            ):
+            if fresh is None or fresh.status != "failed":
+                return False
+
+            ladder = self._auto_retry_ladder(fresh.size)
+            if fresh.auto_retry_count >= len(ladder):
                 return False
 
             step = fresh.auto_retry_count
-            model = AUTO_RETRY_MODELS[step]
+            model = ladder[step]
 
             # 重置任务状态（复用 retry 的字段重置语义）
             fresh.status = "pending"
@@ -682,6 +695,8 @@ class BatchGeneratorService:
         """按模型构建 ToAPIs 请求体。
 
         模型差异（对齐 ToAPIs 文档）：
+        - gpt-image-2.5-flare / gpt-image-2.5-sunburst：2.5 普通版（异步任务），
+          顶层 size（比例）+ resolution；质量固定 high，**不传 quality**
         - gpt-image-2：顶层 resolution（1k/2k/4k），无 quality
         - gpt-image-2-vip：顶层 resolution + quality（low/medium/high）
         - gemini-3.1-flash-image-preview：resolution 在 metadata（大写 1K/2K/4K），
@@ -707,6 +722,9 @@ class BatchGeneratorService:
             payload["resolution"] = request.resolution
             if quality:
                 payload["quality"] = quality
+        elif model in GPT25_MODELS:
+            # 2.5 普通版：顶层 resolution；质量固定 high，不传 quality
+            payload["resolution"] = request.resolution
         elif model in (
             "gemini-3.1-flash-image-preview",
             "gemini-3.1-flash-image-preview-official",
@@ -776,6 +794,19 @@ class BatchGeneratorService:
         if task.status not in ("completed", "failed"):
             raise ValueError(
                 f"任务当前状态为 {task.status}，仅已完成/失败的任务可重新生成"
+            )
+
+        # 2.5 普通版不支持的比例：拒绝（schema 已校验覆盖的 size；
+        # 此处兜底任务原 size——批量/产品替换重新生成不允许改尺寸）
+        effective_size = size if size is not None else task.size
+        target_model = model if model is not None else task.model
+        if (
+            target_model in GPT25_MODELS
+            and effective_size in GPT25_UNSUPPORTED_SIZES
+        ):
+            raise ValueError(
+                f"模型 {target_model} 不支持宽高比 {effective_size}，"
+                f"不支持：{sorted(GPT25_UNSUPPORTED_SIZES)}"
             )
 
         # 模型覆盖 + 精度校正（防残留）

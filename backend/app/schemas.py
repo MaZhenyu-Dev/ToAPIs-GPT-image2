@@ -34,11 +34,17 @@ GENERATION_MODE = Literal[
 ]
 
 # 生图模型白名单（与 ToAPIs 文档对齐；前端 IMAGE_MODEL_OPTIONS 需同步）：
-# - gpt-image-2：默认模型，不支持 quality 参数
+# - gpt-image-2.5-flare：默认模型，2.5 普通版（异步任务），高速高质量，
+#   质量固定 high（不传 quality）
+# - gpt-image-2.5-sunburst：2.5 普通版（异步任务），精密工作流/编辑精度高，
+#   生成更慢，质量固定 high（不传 quality）
+# - gpt-image-2：不支持 quality 参数
 # - gpt-image-2-vip：支持 quality（low/medium/high），分辨率在顶层
 # - gemini-3.1-flash-image-preview：ToAPIs 中转版（Nano banana 2），分辨率在
 #   metadata（大写 1K/2K/4K），不支持 quality（与 gpt-image-2 同逻辑）
 IMAGE_MODEL_ORDER = [
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
     "gpt-image-2",
     "gpt-image-2-vip",
     "gemini-3.1-flash-image-preview",
@@ -46,6 +52,8 @@ IMAGE_MODEL_ORDER = [
 ]
 
 IMAGE_MODEL = Literal[
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
     "gpt-image-2",
     "gpt-image-2-vip",
     "gemini-3.1-flash-image-preview",
@@ -56,21 +64,29 @@ IMAGE_MODEL = Literal[
 IMAGE_QUALITY = Literal["low", "medium", "high"]
 
 # 支持 quality 参数的模型（其余模型传 quality 直接校验报错，避免"选了没用上"）
+# 注：2.5 普通版（flare/sunburst）质量固定 high，不在此集合
 QUALITY_SUPPORTED_MODELS = {"gpt-image-2-vip"}
 
+# 2.5 普通版模型 + 其不支持的宽高比（ToAPIs 文档仅支持
+# 1:1/3:2/2:3/4:3/3:4/5:4/4:5/16:9/9:16/21:9，
+# 不支持项目比例池中的 2:1/1:2/9:21；前端会禁用对应选项）
+GPT25_MODELS = frozenset({"gpt-image-2.5-flare", "gpt-image-2.5-sunburst"})
+GPT25_UNSUPPORTED_SIZES = frozenset({"2:1", "1:2", "9:21"})
+
 # 自动重试模型阶梯：任务失败后依次尝试（每次失败后自动换下一个模型重新提交）
-# 第 1 次：gpt-image-2（原配置）→ 第 2 次：gpt-image-2-vip + quality=medium → 第 3 次：gemini
-# 3 次全部失败后停止，交由用户手动重试（手动重试不清零计数，避免无限循环）
+# 第 1 次：gpt-image-2.5-sunburst（升级质量）→ 第 2 次：gpt-image-2.5-flare
+# → 第 3 次：gpt-image-2 → 第 4 次：gemini
+# 4 次全部失败后停止，交由用户手动重试（手动重试不清零计数，避免无限循环）
+# 注：2.5 不支持的宽高比（2:1/1:2/9:21）任务会自动跳过阶梯中的 2.5 模型
 AUTO_RETRY_MODELS = [
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.5-flare",
     "gpt-image-2",
-    "gpt-image-2-vip",
     "gemini-3.1-flash-image-preview",
 ]
 MAX_AUTO_RETRY = len(AUTO_RETRY_MODELS)
-# 各阶梯模型的精度档位（不支持的模型为 None，不传 quality）
-AUTO_RETRY_QUALITY: dict[str, Optional[str]] = {
-    "gpt-image-2-vip": "medium",
-}
+# 各阶梯模型的精度档位（阶梯模型均不支持 quality，不传）
+AUTO_RETRY_QUALITY: dict[str, Optional[str]] = {}
 
 # product_swap 模式：产品图数量上下限，与 MAX_CONCURRENT_GENERATIONS=20 对齐
 MIN_PRODUCT_SWAP_COUNT = 1
@@ -125,12 +141,13 @@ class SizeResolutionMixin(BaseModel):
 class ModelQualityMixin(BaseModel):
     """生图模型 + 精度档位（各批量/替换请求共用）。
 
-    - model: 白名单（见 IMAGE_MODEL），默认 gpt-image-2
+    - model: 白名单（见 IMAGE_MODEL），默认 gpt-image-2.5-flare
     - quality: low/medium/high；仅支持 quality 的模型允许传入，其余模型
       传 quality 直接报错（避免"选了精度却没生效"的困惑）
+    - 2.5 普通版不支持 2:1/1:2/9:21：选这些比例时直接报错（前端已禁用）
     """
 
-    model: IMAGE_MODEL = "gpt-image-2"
+    model: IMAGE_MODEL = "gpt-image-2.5-flare"
     quality: Optional[IMAGE_QUALITY] = None
 
     @model_validator(mode="after")
@@ -139,6 +156,21 @@ class ModelQualityMixin(BaseModel):
             raise ValueError(
                 f"模型 {self.model} 不支持 quality 参数，"
                 f"仅 {sorted(QUALITY_SUPPORTED_MODELS)} 支持"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_gpt25_size_supported(self):
+        """2.5 普通版不支持的宽高比直接拒绝（避免调用浪费）。
+
+        `size` 字段由组合的 SizeResolutionMixin 提供（TaskRegenerateRequest
+        为可选）；缺失时不校验（由服务层对任务实际 size 兜底）。
+        """
+        size = getattr(self, "size", None)
+        if size in GPT25_UNSUPPORTED_SIZES and self.model in GPT25_MODELS:
+            raise ValueError(
+                f"模型 {self.model} 不支持宽高比 {size}，"
+                f"不支持：{sorted(GPT25_UNSUPPORTED_SIZES)}"
             )
         return self
 
@@ -821,6 +853,26 @@ class ErpGenerateRequest(SizeResolutionMixin, ModelQualityMixin):
     def check_fixed_size(self):
         if self.size_mode == "fixed" and not self.fixed_size:
             raise ValueError("size_mode=fixed 时必须提供 fixed_size")
+        return self
+
+    @model_validator(mode="after")
+    def check_gpt25_size_fields(self):
+        """2.5 普通版：统一比例 / 比例覆盖中出现不支持的比例直接拒绝。
+
+        auto 模式下由订单尺寸映射出的比例不在此校验（服务层会把该货号
+        自动回退到 gpt-image-2，见 routers/erp.py）。
+        """
+        if self.model not in GPT25_MODELS:
+            return self
+        candidates = list(self.size_overrides.values())
+        if self.fixed_size:
+            candidates.append(self.fixed_size)
+        bad = sorted({s for s in candidates if s in GPT25_UNSUPPORTED_SIZES})
+        if bad:
+            raise ValueError(
+                f"模型 {self.model} 不支持宽高比 {', '.join(bad)}，"
+                "请调整统一比例/比例覆盖或更换模型"
+            )
         return self
 
 
