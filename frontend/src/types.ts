@@ -160,6 +160,8 @@ export interface BatchRetryResponse {
   retried_batch_ids: string[]
   retried_task_count: number
   skipped_batch_ids: string[]
+  // 因所选模型不支持其宽高比而被跳过的失败任务数
+  skipped_task_count?: number
 }
 
 // 今日批次计数（来自 GET /api/batches/today-count）

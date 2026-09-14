@@ -545,9 +545,29 @@ class BatchRetryTasksRequest(BaseModel):
 
 
 class BatchRetryRequest(BaseModel):
-    """批量重试失败任务请求：对选中的批次，重试其中所有 failed 任务。"""
+    """批量重试失败任务请求：对选中的批次，重试其中所有 failed 任务。
+
+    - model: 不传则沿用各任务原模型（向后兼容）；传了则统一改为该模型，
+      不支持其宽高比的任务会被跳过（服务层处理）
+    - quality: 仅支持 quality 的模型允许传
+    """
 
     batch_ids: list[str] = Field(..., min_length=1, max_length=500)
+    model: Optional[IMAGE_MODEL] = None
+    quality: Optional[IMAGE_QUALITY] = None
+
+    @model_validator(mode="after")
+    def check_quality_supported(self):
+        if self.quality is None:
+            return self
+        if self.model is None:
+            raise ValueError("指定 quality 时必须同时指定 model")
+        if self.model not in QUALITY_SUPPORTED_MODELS:
+            raise ValueError(
+                f"模型 {self.model} 不支持 quality 参数，"
+                f"仅 {sorted(QUALITY_SUPPORTED_MODELS)} 支持"
+            )
+        return self
 
 
 class BatchRetryResponse(BaseModel):
@@ -558,6 +578,8 @@ class BatchRetryResponse(BaseModel):
     retried_task_count: int
     # 用户选中但没有 failed 任务、被跳过的批次
     skipped_batch_ids: list[str]
+    # 因所选模型不支持其宽高比而被跳过的失败任务数
+    skipped_task_count: int = 0
 
 
 class TodayBatchCountResponse(BaseModel):

@@ -163,6 +163,10 @@ async def retry_failed_batches_bulk(
 ):
     """一键重试多个批次中的失败任务（近期批次总览页「重试已选批次」）。
 
+    可选请求体字段 model/quality：指定本次重试使用的模型/精度；不传则沿用
+    各任务原模型。所选模型不支持某些任务宽高比时，这些任务会被跳过并在
+    skipped_task_count 返回。
+
     系统校验：
     - 只重试「存在 failed 任务」的批次；无失败任务的批次跳过并返回
     - 批次不存在（已删除）同样跳过，不报错
@@ -171,8 +175,10 @@ async def retry_failed_batches_bulk(
     if not request.batch_ids:
         raise HTTPException(status_code=400, detail="batch_ids 不能为空")
     try:
-        retried_batch_ids, retried_task_count, skipped = (
-            await batch_generator.retry_failed_batches(db, request.batch_ids)
+        retried_batch_ids, retried_task_count, skipped, skipped_task_count = (
+            await batch_generator.retry_failed_batches(
+                db, request.batch_ids, request.model, request.quality
+            )
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -180,6 +186,7 @@ async def retry_failed_batches_bulk(
         retried_batch_ids=retried_batch_ids,
         retried_task_count=retried_task_count,
         skipped_batch_ids=skipped,
+        skipped_task_count=skipped_task_count,
     )
 
 

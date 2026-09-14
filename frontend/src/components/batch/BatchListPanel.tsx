@@ -20,6 +20,8 @@ import {
 import type {
   BatchListResponse,
   BatchSummary,
+  ImageModelId,
+  ImageQuality,
   VariantGroupListItem,
 } from '../../types'
 import Badge from '../ui/Badge'
@@ -32,6 +34,7 @@ import { useToast } from '../ui/Toast'
 import { IconLayers } from '../ui/Icon'
 import AutoRelayDialog from './AutoRelayDialog'
 import type { RelayStats } from './AutoRelayDialog'
+import RetryFailedDialog from './RetryFailedDialog'
 import type { AutoRelayConfig } from '../../types'
 
 const LIST_POLL_INTERVAL_MS = 3000
@@ -80,6 +83,10 @@ export default function BatchListPanel({
   const [selectedBatches, setSelectedBatches] = useState<Set<string>>(new Set())
   const [deleting, setDeleting] = useState(false)
   const [retrying, setRetrying] = useState(false)
+  const [retryDialogOpen, setRetryDialogOpen] = useState(false)
+  const [retryTargetCount, setRetryTargetCount] = useState(0)
+  // 弹窗确认后使用：记录发起重试时的选中批次（弹窗期间选择态不变）
+  const retrySelectedIdsRef = useRef<string[]>([])
   const [relayCollecting, setRelayCollecting] = useState(false)
   const [relayStats, setRelayStats] = useState<RelayStats | null>(null)
   const [exportState, setExportState] = useState<ExportState>({
@@ -271,7 +278,7 @@ export default function BatchListPanel({
     }
   }
 
-  const handleRetrySelected = async () => {
+  const handleRetrySelected = () => {
     if (selectedBatches.size === 0) return
     const selectedIds = Array.from(selectedBatches)
     const failedInSelected = batches.filter(
@@ -281,30 +288,36 @@ export default function BatchListPanel({
       (sum, b) => sum + b.failed_count,
       0
     )
-    const skippedCount = selectedIds.length - failedInSelected.length
 
     if (failedInSelected.length === 0) {
       toast.warning('选中的批次没有失败任务，无需重试')
       return
     }
-    const ok = await confirm({
-      title: '重试失败任务',
-      message:
-        `将重试 ${failedInSelected.length} 个批次中的 ${failedTaskCount} 个失败任务` +
-        (skippedCount > 0 ? `（${skippedCount} 个批次无失败任务，将自动跳过）` : ''),
-      confirmLabel: '开始重试',
-      tone: 'primary',
-    })
-    if (!ok) return
+    retrySelectedIdsRef.current = selectedIds
+    setRetryTargetCount(failedTaskCount)
+    setRetryDialogOpen(true)
+  }
 
+  const handleRetryConfirm = async (
+    model: ImageModelId,
+    quality: ImageQuality | undefined
+  ) => {
     setRetrying(true)
     try {
-      const result = await retryFailedBatches(selectedIds)
+      const result = await retryFailedBatches(retrySelectedIdsRef.current, {
+        model,
+        ...(quality ? { quality } : {}),
+      })
+      setRetryDialogOpen(false)
       setSelectedBatches(new Set())
+      const skippedTasks = result.skipped_task_count ?? 0
       toast.success(
         `已重试 ${result.retried_batch_ids.length} 个批次、${result.retried_task_count} 个失败任务` +
           (result.skipped_batch_ids.length > 0
-            ? `；${result.skipped_batch_ids.length} 个批次无失败任务已跳过`
+            ? `；${result.skipped_batch_ids.length} 个批次已跳过`
+            : '') +
+          (skippedTasks > 0
+            ? `；${skippedTasks} 个任务因所选模型不支持其宽高比被跳过`
             : '')
       )
       onDataChanged()
@@ -718,6 +731,15 @@ export default function BatchListPanel({
           groups={groups}
           onConfirm={(config) => void handleRelayConfirm(config)}
           onClose={() => setRelayStats(null)}
+        />
+      )}
+
+      {retryDialogOpen && (
+        <RetryFailedDialog
+          failedCount={retryTargetCount}
+          busy={retrying}
+          onConfirm={handleRetryConfirm}
+          onClose={() => setRetryDialogOpen(false)}
         />
       )}
     </div>

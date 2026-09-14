@@ -516,6 +516,34 @@ class BatchGeneratorService:
             chunk = tasks[i : i + submit_chunk]
             await asyncio.gather(*[submit_one(task) for task in chunk])
 
+    def _apply_retry_model(
+        self,
+        tasks: Sequence[GenerationTask],
+        model: str | None,
+        quality: str | None,
+    ) -> tuple[list[GenerationTask], int]:
+        """按所选模型过滤失败任务并写入 model/quality。
+
+        - model 为 None：原样返回（沿用各任务原模型），跳过数 0
+        - model 传了：仅保留宽高比兼容的任务并统一改为该模型/精度，
+          不兼容的任务跳过（返回其数量）
+
+        返回 ``(可重试任务列表, 跳过任务数)``。
+        """
+        if model is None:
+            return list(tasks), 0
+
+        eligible: list[GenerationTask] = []
+        skipped = 0
+        for task in tasks:
+            if is_model_size_compatible(model, task.size):
+                task.model = model
+                task.quality = quality
+                eligible.append(task)
+            else:
+                skipped += 1
+        return eligible, skipped
+
     async def retry_failed(
         self,
         db: AsyncSession,
@@ -537,33 +565,32 @@ class BatchGeneratorService:
         if not failed_tasks:
             raise ValueError(f"批次 {batch_id} 没有失败任务可重试")
 
-        skipped_count = 0
-        if model is not None:
-            eligible = []
-            for task in failed_tasks:
-                if is_model_size_compatible(model, task.size):
-                    task.model = model
-                    task.quality = quality
-                    eligible.append(task)
-                else:
-                    skipped_count += 1
-            if not eligible:
-                raise ValueError(
-                    f"所选模型 {model} 不支持该批次中任何失败任务的宽高比"
-                )
-            failed_tasks = eligible
+        eligible, skipped_count = self._apply_retry_model(
+            failed_tasks, model, quality
+        )
+        if not eligible:
+            raise ValueError(
+                f"所选模型 {model} 不支持该批次中任何失败任务的宽高比"
+            )
 
-        await self._reset_and_resubmit(db, batch_id, failed_tasks)
-        return batch_id, len(failed_tasks), skipped_count
+        await self._reset_and_resubmit(db, batch_id, eligible)
+        return batch_id, len(eligible), skipped_count
 
     async def retry_failed_batches(
-        self, db: AsyncSession, batch_ids: list[str]
-    ) -> tuple[list[str], int, list[str]]:
+        self,
+        db: AsyncSession,
+        batch_ids: list[str],
+        model: str | None = None,
+        quality: str | None = None,
+    ) -> tuple[list[str], int, list[str], int]:
         """跨批次一键重试失败任务（近期批次总览页「重试已选批次」）。
 
         - 只重试「确实存在 failed 任务」的批次，其余批次跳过并返回
+        - model 传了：统一改用该模型/精度；宽高比不被该模型支持的失败任务
+          会被跳过（计入 skipped_task_count）；若某批次没有可重试任务则整批跳过
         - 每个批次独立后台提交（互不影响，一个批次失败不影响其他）
-        - 返回 ``(retried_batch_ids, retried_task_count, skipped_batch_ids)``
+        - 返回 ``(retried_batch_ids, retried_task_count, skipped_batch_ids,
+          skipped_task_count)``
         """
         # 先做批次存在性校验：批量查这些批次是否真实存在
         existing = await find_existing_batch_ids(db, batch_ids)
@@ -573,6 +600,7 @@ class BatchGeneratorService:
         retried_batch_ids: list[str] = []
         skipped_batch_ids: list[str] = []
         retried_task_count = 0
+        skipped_task_count = 0
 
         for batch_id in batch_ids:
             if batch_id not in existing:
@@ -586,11 +614,25 @@ class BatchGeneratorService:
                 continue
 
             failed_tasks = await get_failed_tasks_by_batch(db, batch_id)
-            await self._reset_and_resubmit(db, batch_id, failed_tasks)
-            retried_batch_ids.append(batch_id)
-            retried_task_count += len(failed_tasks)
+            eligible, skipped = self._apply_retry_model(
+                failed_tasks, model, quality
+            )
+            skipped_task_count += skipped
+            if not eligible:
+                # 该批次所有失败任务都与所选模型宽高比不兼容：整批跳过
+                skipped_batch_ids.append(batch_id)
+                continue
 
-        return retried_batch_ids, retried_task_count, skipped_batch_ids
+            await self._reset_and_resubmit(db, batch_id, eligible)
+            retried_batch_ids.append(batch_id)
+            retried_task_count += len(eligible)
+
+        return (
+            retried_batch_ids,
+            retried_task_count,
+            skipped_batch_ids,
+            skipped_task_count,
+        )
 
     def _auto_retry_ladder(self, size: str) -> list[str]:
         """当前任务宽高比可用的自动重试阶梯。
