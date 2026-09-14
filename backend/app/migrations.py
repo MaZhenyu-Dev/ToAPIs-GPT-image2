@@ -30,8 +30,8 @@ REQUIRED_COLUMNS: dict[str, dict[str, str]] = {
             "VARCHAR(10) NULL COMMENT '精度档位 low/medium/high (仅 gpt-image-2-vip 支持)'"
         ),
         "auto_retry_count": (
-            "INT NOT NULL DEFAULT 0 COMMENT '自动重试已执行次数（0-4，"
-            "失败后按模型阶梯自动重试；4 次后停止交由用户手动重试）'"
+            "INT NOT NULL DEFAULT 0 COMMENT '自动重试已执行次数（0-3，"
+            "失败后按模型阶梯自动重试；3 次后停止交由用户手动重试）'"
         ),
         "crop_enabled": (
             "TINYINT(1) NOT NULL DEFAULT 1 COMMENT '白边裁剪开关（生成时快照）'"

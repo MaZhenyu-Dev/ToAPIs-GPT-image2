@@ -135,7 +135,7 @@ export default function BatchTaskCard({
         </div>
       )}
       {isFailed && task.auto_retry_count > 0 && (
-        <div className="task-card-error" title="自动重试已执行完毕（2.5 Sunburst → 2.5 Flare → GPT-Image-2 → Gemini），可手动重新生成或批次级重试">
+        <div className="task-card-error" title="自动重试已执行完毕（2.5 Sunburst → 2.5 Flare → GPT-Image-2），可手动重新生成或批次级重试">
           已自动重试 {task.auto_retry_count} 次，仍失败 · 可手动重试
         </div>
       )}

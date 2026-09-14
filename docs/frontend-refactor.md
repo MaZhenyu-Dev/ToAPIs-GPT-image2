@@ -689,14 +689,15 @@ type TabKey = 'generate' | 'product_swap' | 'title' | 'groups'
 ## 20. 失败自动重试（模型阶梯）
 
 > 2026-08-20 按用户需求完成：任务失败后自动重试 3 次，逐级换模型；3 次全失败后停止，保留用户手动重试。
+> 后续移除阶梯末位的 Gemini（生成质量不高）：第 1 次 gpt-image-2.5-sunburst → 第 2 次 gpt-image-2.5-flare → 第 3 次 gpt-image-2。
 
 ### 20.1 重试阶梯（AUTO_RETRY_MODELS）
 
 | 次数 | 模型 | 精度 | 其他参数 |
 |---|---|---|---|
-| 第 1 次 | gpt-image-2 | — | 原配置（尺寸/分辨率/参考图） |
-| 第 2 次 | gpt-image-2-vip | medium | 原配置 |
-| 第 3 次 | gemini-3.1-flash-image-preview | — | 原配置 |
+| 第 1 次 | gpt-image-2.5-sunburst | — | 原配置（尺寸/分辨率/参考图） |
+| 第 2 次 | gpt-image-2.5-flare | — | 原配置 |
+| 第 3 次 | gpt-image-2 | — | 原配置 |
 
 ### 20.2 实现要点
 

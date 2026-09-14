@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS `generation_tasks` (
     `product_image_url` VARCHAR(500) NULL COMMENT 'product_swap 模式: 任务级产品图 URL',
     `prompt` TEXT NULL COMMENT 'product_swap 模式: 任务级 prompt（不再依赖 variant）',
     `retried_count` INT NOT NULL DEFAULT 0 COMMENT '重试次数（重试失败任务/重新生成时+1，用于区分跨天重试批次）',
-    `auto_retry_count` INT NOT NULL DEFAULT 0 COMMENT '自动重试已执行次数（0-4，失败后按模型阶梯 gpt-image-2.5-sunburst→gpt-image-2.5-flare→gpt-image-2→gemini 自动重试；4 次后停止交由用户手动重试）',
+    `auto_retry_count` INT NOT NULL DEFAULT 0 COMMENT '自动重试已执行次数（0-3，失败后按模型阶梯 gpt-image-2.5-sunburst→gpt-image-2.5-flare→gpt-image-2 自动重试；3 次后停止交由用户手动重试）',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `completed_at` DATETIME NULL COMMENT '完成时间',
     INDEX `idx_generation_tasks_batch_id` (`batch_id`),

@@ -75,14 +75,13 @@ GPT25_UNSUPPORTED_SIZES = frozenset({"2:1", "1:2", "9:21"})
 
 # 自动重试模型阶梯：任务失败后依次尝试（每次失败后自动换下一个模型重新提交）
 # 第 1 次：gpt-image-2.5-sunburst（升级质量）→ 第 2 次：gpt-image-2.5-flare
-# → 第 3 次：gpt-image-2 → 第 4 次：gemini
-# 4 次全部失败后停止，交由用户手动重试（手动重试不清零计数，避免无限循环）
+# → 第 3 次：gpt-image-2
+# 3 次全部失败后停止，交由用户手动重试（手动重试不清零计数，避免无限循环）
 # 注：2.5 不支持的宽高比（2:1/1:2/9:21）任务会自动跳过阶梯中的 2.5 模型
 AUTO_RETRY_MODELS = [
     "gpt-image-2.5-sunburst",
     "gpt-image-2.5-flare",
     "gpt-image-2",
-    "gemini-3.1-flash-image-preview",
 ]
 MAX_AUTO_RETRY = len(AUTO_RETRY_MODELS)
 # 各阶梯模型的精度档位（阶梯模型均不支持 quality，不传）

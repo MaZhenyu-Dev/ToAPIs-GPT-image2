@@ -82,8 +82,8 @@ class GenerationTask(Base):
     # 用途：近期批次总览页据此显示「重试 ×N」徽章（列表排序完全按批次号，
     # 重试刷新 created_at 不会让批次移动位置）。
     retried_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    # 自动重试已执行次数（0-4）：任务失败后按模型阶梯自动重试
-    # （gpt-image-2.5-sunburst → gpt-image-2.5-flare → gpt-image-2 → gemini-3.1-flash-image-preview）。
+    # 自动重试已执行次数（0-3）：任务失败后按模型阶梯自动重试
+    # （gpt-image-2.5-sunburst → gpt-image-2.5-flare → gpt-image-2）。
     # 与 retried_count 语义分离（那是用户手动重试计数，列表"重试过"标记依赖它）。
     auto_retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # 白边裁剪：生成时的配置快照（crop_enabled/crop_threshold）+ 裁剪结果

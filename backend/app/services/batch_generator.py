@@ -569,7 +569,7 @@ class BatchGeneratorService:
         """当前任务宽高比可用的自动重试阶梯。
 
         2.5 不支持的宽高比（2:1/1:2/9:21）：跳过阶梯中的 2.5 模型，
-        避免用必然失败的模型浪费调用（gpt-image-2/gemini 均支持这些比例）。
+        避免用必然失败的模型浪费调用（gpt-image-2 支持这些比例）。
         """
         if size in GPT25_UNSUPPORTED_SIZES:
             return [m for m in AUTO_RETRY_MODELS if m not in GPT25_MODELS]
@@ -580,11 +580,10 @@ class BatchGeneratorService:
     ) -> bool:
         """任务失败后的自动重试：按模型阶梯逐级升级换模型重新提交。
 
-        阶梯（AUTO_RETRY_MODELS，共 4 次）：
+        阶梯（AUTO_RETRY_MODELS，共 3 次）：
         - 第 1 次：gpt-image-2.5-sunburst
         - 第 2 次：gpt-image-2.5-flare
         - 第 3 次：gpt-image-2
-        - 第 4 次：gemini-3.1-flash-image-preview
 
         规则：
         - 次数达到可用阶梯长度后不再自动重试（保留用户手动重试；手动重试不清零计数）
