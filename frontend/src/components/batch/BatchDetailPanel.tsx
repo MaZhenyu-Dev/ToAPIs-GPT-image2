@@ -10,7 +10,13 @@ import {
   pickDirectory,
   saveTasksToDirectory,
 } from '../../lib/fsDownload'
-import type { BatchStatusResponse, BatchSummary, GenerationTaskItem } from '../../types'
+import type {
+  BatchStatusResponse,
+  BatchSummary,
+  GenerationTaskItem,
+  ImageModelId,
+  ImageQuality,
+} from '../../types'
 import Badge from '../ui/Badge'
 import { useConfirm } from '../ui/ConfirmDialog'
 import GlassButton from '../ui/GlassButton'
@@ -20,6 +26,7 @@ import StatCard from '../ui/StatCard'
 import { useToast } from '../ui/Toast'
 import { IconArrowLeft, IconArrowRight, IconDownload, IconRefresh, IconTrash } from '../ui/Icon'
 import BatchTaskCard from './BatchTaskCard'
+import RetryFailedDialog from './RetryFailedDialog'
 
 interface BatchDetailPanelProps {
   batch: BatchStatusResponse
@@ -35,7 +42,10 @@ interface BatchDetailPanelProps {
   /** 切换条搜索（全库模糊查询；空串恢复最近批次） */
   onSearchSwitchBatches: (q: string) => void
   onBack: () => void
-  onRetryFailed: () => Promise<void>
+  onRetryFailed: (
+    model: ImageModelId,
+    quality: ImageQuality | undefined
+  ) => Promise<void>
   onRegenerateTask: (task: GenerationTaskItem) => void
   onDeleteBatch: () => Promise<void>
 }
@@ -62,6 +72,7 @@ export default function BatchDetailPanel({
   const [selectedTasks, setSelectedTasks] = useState<Set<number>>(new Set())
   const [previewIndex, setPreviewIndex] = useState<number | null>(null)
   const [retrying, setRetrying] = useState(false)
+  const [retryDialogOpen, setRetryDialogOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [dirDownloading, setDirDownloading] = useState(false)
   const [dirProgress, setDirProgress] = useState<{ done: number; total: number; current: number } | null>(null)
@@ -195,17 +206,18 @@ export default function BatchDetailPanel({
     }
   }
 
-  const handleRetry = async () => {
-    const ok = await confirm({
-      title: '重试失败任务',
-      message: `将重试该批次中 ${failedTasks.length} 个失败任务，确定继续吗？`,
-      confirmLabel: '开始重试',
-      tone: 'primary',
-    })
-    if (!ok) return
+  const handleRetry = () => {
+    setRetryDialogOpen(true)
+  }
+
+  const handleRetryConfirm = async (
+    model: ImageModelId,
+    quality: ImageQuality | undefined
+  ) => {
     setRetrying(true)
     try {
-      await onRetryFailed()
+      await onRetryFailed(model, quality)
+      setRetryDialogOpen(false)
     } finally {
       setRetrying(false)
     }
@@ -508,6 +520,15 @@ export default function BatchDetailPanel({
         initialIndex={previewIndex ?? 0}
         onClose={() => setPreviewIndex(null)}
       />
+
+      {retryDialogOpen && (
+        <RetryFailedDialog
+          failedCount={failedTasks.length}
+          busy={retrying}
+          onConfirm={handleRetryConfirm}
+          onClose={() => setRetryDialogOpen(false)}
+        />
+      )}
     </div>
   )
 }

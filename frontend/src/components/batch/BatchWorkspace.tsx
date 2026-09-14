@@ -233,18 +233,31 @@ export default function BatchWorkspace({ groups, selectedGroupId }: BatchWorkspa
     setListRefreshKey((k) => k + 1)
   }
 
-  const handleRetryFailed = async () => {
+  const handleRetryFailed = async (
+    model: ImageModelId,
+    quality: ImageQuality | undefined
+  ) => {
     if (!batch) return
     const hasFailed = batch.tasks.some((t) => t.status === 'failed')
     if (!hasFailed) return
     try {
-      const response = await retryBatch(batch.batch_id)
+      const response = await retryBatch(batch.batch_id, {
+        model,
+        ...(quality ? { quality } : {}),
+      })
       const status = await fetchOnce(response.batch_id)
       if (status) {
         setBatch(status)
         startPolling(response.batch_id)
       }
-      toast.success('已重新提交失败任务')
+      const skipped = response.skipped_task_count ?? 0
+      if (skipped > 0) {
+        toast.warning(
+          `已重新提交失败任务；${skipped} 个任务因所选模型不支持其宽高比被跳过`
+        )
+      } else {
+        toast.success('已重新提交失败任务')
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '重试失败任务失败')
     }

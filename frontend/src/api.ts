@@ -20,6 +20,8 @@ import type {
   GenerationTaskItem,
   I2iMultiCreateRequest,
   I2iMultiCreateResponse,
+  ImageModelId,
+  ImageQuality,
   ImageUploadResponse,
   ProductSwapRequest,
   TitleBatchDeleteRequest,
@@ -149,9 +151,13 @@ export function getBatchStatus(batchId: string): Promise<BatchStatusResponse> {
   return fetchJson<BatchStatusResponse>(`/api/batches/${batchId}/status`)
 }
 
-export function retryBatch(batchId: string): Promise<BatchGenerateResponse> {
+export function retryBatch(
+  batchId: string,
+  payload?: { model?: ImageModelId; quality?: ImageQuality }
+): Promise<BatchGenerateResponse> {
   return fetchJson<BatchGenerateResponse>(`/api/batches/${batchId}/retry`, {
     method: 'POST',
+    body: payload ? JSON.stringify(payload) : undefined,
   })
 }
 

@@ -19,6 +19,7 @@ from backend.app.schemas import (
     BatchListResponse,
     BatchRetryRequest,
     BatchRetryResponse,
+    BatchRetryTasksRequest,
     BatchStatusResponse,
     GenerationTaskOut,
     I2iMultiCreateRequest,
@@ -123,13 +124,36 @@ async def get_batch_status(batch_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{batch_id}/retry", response_model=BatchGenerateResponse)
-async def retry_failed_tasks(batch_id: str, db: AsyncSession = Depends(get_db)):
-    """重试批次中状态为失败的任务。"""
+async def retry_failed_tasks(
+    batch_id: str,
+    body: BatchRetryTasksRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """重试批次中状态为失败的任务。
+
+    可选请求体 BatchRetryTasksRequest：指定本次重试使用的模型/精度；
+    不传则沿用各任务原模型（向后兼容）。所选模型不支持某些任务宽高比时，
+    这些任务会被跳过并在 skipped_task_count 返回。
+    """
+    model = body.model if body else None
+    quality = body.quality if body else None
     try:
-        batch_id, task_count = await batch_generator.retry_failed(db, batch_id)
+        batch_id, task_count, skipped_count = await batch_generator.retry_failed(
+            db, batch_id, model, quality
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return BatchGenerateResponse(batch_id=batch_id, task_count=task_count)
+    message = (
+        f"{skipped_count} 个失败任务因所选模型不支持其宽高比被跳过"
+        if skipped_count
+        else None
+    )
+    return BatchGenerateResponse(
+        batch_id=batch_id,
+        task_count=task_count,
+        skipped_task_count=skipped_count,
+        message=message,
+    )
 
 
 @router.post("/retry-failed", response_model=BatchRetryResponse)

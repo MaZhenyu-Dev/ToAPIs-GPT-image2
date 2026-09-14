@@ -73,6 +73,19 @@ QUALITY_SUPPORTED_MODELS = {"gpt-image-2-vip"}
 GPT25_MODELS = frozenset({"gpt-image-2.5-flare", "gpt-image-2.5-sunburst"})
 GPT25_UNSUPPORTED_SIZES = frozenset({"2:1", "1:2", "9:21"})
 
+
+def is_model_size_compatible(model: str, size: str) -> bool:
+    """指定模型是否支持该宽高比（批量重试按任务 size 过滤不兼容模型）。
+
+    - 极端宽高比（4:1/1:4/8:1/1:8）仅 EXTREME_RATIO_MODEL（gemini）支持
+    - 2.5 普通版（flare/sunburst）不支持 2:1/1:2/9:21
+    """
+    if size in EXTREME_SIZES and model != EXTREME_RATIO_MODEL:
+        return False
+    if size in GPT25_UNSUPPORTED_SIZES and model in GPT25_MODELS:
+        return False
+    return True
+
 # 自动重试模型阶梯：任务失败后依次尝试（每次失败后自动换下一个模型重新提交）
 # 第 1 次：gpt-image-2.5-sunburst（升级质量）→ 第 2 次：gpt-image-2.5-flare
 # → 第 3 次：gpt-image-2
@@ -382,6 +395,8 @@ class BatchGenerateResponse(BaseModel):
     task_count: int
     # 附加提示信息（如部分订单输入图获取失败），可空
     message: Optional[str] = None
+    # 批量重试时：因所选模型不支持其宽高比而被跳过的失败任务数
+    skipped_task_count: int = 0
 
 
 class TaskRegenerateRequest(ModelQualityMixin):
@@ -502,6 +517,31 @@ class BatchDeleteResponse(BaseModel):
 
     deleted_batch_ids: list[str]
     deleted_task_count: int
+
+
+class BatchRetryTasksRequest(BaseModel):
+    """单批次重试失败任务请求：可选指定重试使用的模型/精度。
+
+    - model: 不传则沿用各任务原模型（向后兼容）；传了则统一改为该模型，
+      不支持其宽高比的任务会被跳过（服务层处理）
+    - quality: 仅支持 quality 的模型允许传
+    """
+
+    model: Optional[IMAGE_MODEL] = None
+    quality: Optional[IMAGE_QUALITY] = None
+
+    @model_validator(mode="after")
+    def check_quality_supported(self):
+        if self.quality is None:
+            return self
+        if self.model is None:
+            raise ValueError("指定 quality 时必须同时指定 model")
+        if self.model not in QUALITY_SUPPORTED_MODELS:
+            raise ValueError(
+                f"模型 {self.model} 不支持 quality 参数，"
+                f"仅 {sorted(QUALITY_SUPPORTED_MODELS)} 支持"
+            )
+        return self
 
 
 class BatchRetryRequest(BaseModel):

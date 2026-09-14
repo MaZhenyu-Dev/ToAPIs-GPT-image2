@@ -32,6 +32,7 @@ from backend.app.schemas import (
     I2iMultiCreateRequest,
     ProductSwapRequest,
     RelayConfig,
+    is_model_size_compatible,
 )
 from backend.app.toapis_client import client
 
@@ -516,18 +517,44 @@ class BatchGeneratorService:
             await asyncio.gather(*[submit_one(task) for task in chunk])
 
     async def retry_failed(
-        self, db: AsyncSession, batch_id: str
-    ) -> tuple[str, int]:
+        self,
+        db: AsyncSession,
+        batch_id: str,
+        model: str | None = None,
+        quality: str | None = None,
+    ) -> tuple[str, int, int]:
         """重试批次中状态为失败的任务。
 
         将失败任务重置为 pending 并在后台重新提交到 ToAPIs。
+
+        - model 不传：沿用各任务原模型（向后兼容）
+        - model 传了：统一改用该模型/精度；宽高比不被该模型支持的失败任务
+          会被跳过，不参与本次重试
+
+        返回 ``(batch_id, 实际重试任务数, 跳过的任务数)``。
         """
         failed_tasks = await get_failed_tasks_by_batch(db, batch_id)
         if not failed_tasks:
             raise ValueError(f"批次 {batch_id} 没有失败任务可重试")
 
+        skipped_count = 0
+        if model is not None:
+            eligible = []
+            for task in failed_tasks:
+                if is_model_size_compatible(model, task.size):
+                    task.model = model
+                    task.quality = quality
+                    eligible.append(task)
+                else:
+                    skipped_count += 1
+            if not eligible:
+                raise ValueError(
+                    f"所选模型 {model} 不支持该批次中任何失败任务的宽高比"
+                )
+            failed_tasks = eligible
+
         await self._reset_and_resubmit(db, batch_id, failed_tasks)
-        return batch_id, len(failed_tasks)
+        return batch_id, len(failed_tasks), skipped_count
 
     async def retry_failed_batches(
         self, db: AsyncSession, batch_ids: list[str]

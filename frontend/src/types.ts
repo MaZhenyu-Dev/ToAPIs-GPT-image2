@@ -88,6 +88,8 @@ export interface ProductSwapRequest {
 export interface BatchGenerateResponse {
   batch_id: string
   task_count: number
+  // 批量重试时：因所选模型不支持其宽高比而被跳过的失败任务数
+  skipped_task_count?: number
 }
 
 export interface GenerationTaskItem {
