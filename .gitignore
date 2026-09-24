@@ -108,3 +108,6 @@ site/
 .history/
 
 .start-dev.bat
+
+# update.bat 运行状态（安装/更新后自动生成）
+.update-version
