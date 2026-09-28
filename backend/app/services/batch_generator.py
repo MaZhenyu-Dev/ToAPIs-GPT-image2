@@ -3,6 +3,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
+from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import settings
@@ -20,7 +22,8 @@ from backend.app.crud.generation_tasks import (
     update_task_status,
 )
 from backend.app.crud.variant_groups import get_variant_group
-from backend.app.models import GenerationTask
+from backend.app.erp_client import ErpRequestError, erp_client
+from backend.app.models import ErpOrderItem, GenerationTask
 from backend.app.schemas import (
     AUTO_RETRY_MODELS,
     AUTO_RETRY_QUALITY,
@@ -76,9 +79,6 @@ async def _fill_prompt_for_task(
     """
     if not prompt or "{{" not in prompt:
         return prompt
-    from sqlalchemy import select
-
-    from backend.app.models import ErpOrderItem
     from backend.app.services.size_mapping import fill_corridor_placeholders
 
     result = await db.execute(
@@ -91,6 +91,41 @@ async def _fill_prompt_for_task(
         return prompt
     filled = fill_corridor_placeholders(prompt, size_text)
     return filled or prompt
+
+
+async def _resolve_extract_input_url(
+    db: AsyncSession, task: GenerationTask
+) -> str | None:
+    """重新提交 extract 任务前，解析订单当前输入图（唯一事实源）。
+
+    用户在「提取产品图」中替换输入图后，任务上的 reference_image_urls 快照
+    仍是创建时的旧图；重新生成 / 重试必须以 erp_order_items.input_image_url
+    为准，否则会把首次替换的图再次提交（历史 bug）。
+
+    判定与 ``upsert_order_items`` 的「用户是否替换过」保持一致：
+    - 工厂图已知且 输入图 != 工厂图：用户替换图，上传时已是 ToAPIs URL，
+      直接复用（零网络）
+    - 其余（输入图 == 工厂图 / 重置回工厂图 / 历史数据工厂图未知）：
+      ERP CDN 校验 Referer/UA，下载后转存 ToAPIs（与 erp_generate 同一链路）
+
+    返回解析后的 ToAPIs URL；非 extract 模式 / 无关联订单 / 无输入图时返回
+    None（调用方保持原快照，兼容 extract_custom 自定义模式）。
+    """
+    if task.mode != "extract":
+        return None
+    result = await db.execute(
+        select(ErpOrderItem)
+        .where(ErpOrderItem.generation_task_id == task.id)
+        .order_by(ErpOrderItem.order_item_id)
+        .limit(1)
+    )
+    item = result.scalar_one_or_none()
+    if item is None or not item.input_image_url:
+        return None
+    if item.factory_image_url and item.input_image_url != item.factory_image_url:
+        return item.input_image_url
+    image_bytes = await erp_client.get_image_bytes(item.input_image_url)
+    return await client.upload_image_bytes(image_bytes)
 
 
 class BatchGeneratorService:
@@ -699,6 +734,9 @@ class BatchGeneratorService:
             await db.commit()
 
         # 后台异步重新提交（fire-and-forget；信号量限流）
+        # 注意：自动重试沿用任务快照（含输入图）——它是失败后的即时恢复，
+        # 不做订单输入图解析（避免轮询器引入网络 I/O）；用户主动
+        # 「重新生成 / 重试」才刷新输入图（见 regenerate_task / _reset_and_resubmit）。
         request = BatchGenerateRequest(
             group_id=fresh.variant_id or 1,
             mode=fresh.mode,  # type: ignore[arg-type]
@@ -725,8 +763,20 @@ class BatchGeneratorService:
         - 重置时刷新 created_at：让轮询器的 5 分钟超时从本次重试重新计时，
           否则隔天重试的任务会因 created_at 是昨天的而被立即判超时标 failed
         - 单个批次一个后台协程（内部按 chunk 分块提交），多批次互不影响
+        - extract 模式：同样以订单当前输入图刷新快照；刷新失败沿用原快照
+          并记录日志，不阻断重试（批量路径可用性优先）
         """
         for task in failed_tasks:
+            if task.mode == "extract":
+                try:
+                    resolved = await _resolve_extract_input_url(db, task)
+                except (ErpRequestError, HTTPException) as exc:
+                    resolved = None
+                    print(
+                        f"[Retry] 任务 {task.id} 输入图刷新失败，沿用原快照: {exc}"
+                    )
+                if resolved:
+                    task.reference_image_urls = resolved
             task.status = "pending"
             task.progress = 0
             task.image_url = None
@@ -855,6 +905,10 @@ class BatchGeneratorService:
 
         prompt：可选覆盖（提取产品图模式与前端文本框实时同步）；
         不传则沿用任务创建时保存的 prompt 快照。
+
+        extract 模式：提交前用订单当前输入图刷新 reference_image_urls
+        （用户可能在生成后再次替换 / 重置输入图）；解析失败抛 502，
+        任务保持原状，绝不带旧图提交。
         """
         task = await get_task_by_id(db, task_id)
         if task is None or task.batch_id != batch_id:
@@ -897,6 +951,18 @@ class BatchGeneratorService:
         # 传来的仍是模板原文，这里按订单实际尺寸重新填充。
         if prompt is not None:
             task.prompt = await _fill_prompt_for_task(db, task, prompt)
+
+        # extract 模式：重新生成必须用订单当前输入图，而不是任务创建时的旧快照
+        # （用户可能已再次替换输入图 / 重置回工厂图）。解析失败时任务保持原状。
+        if task.mode == "extract":
+            try:
+                resolved = await _resolve_extract_input_url(db, task)
+            except ErpRequestError as exc:
+                raise HTTPException(
+                    status_code=502, detail=f"输入图获取失败: {exc}"
+                ) from exc
+            if resolved:
+                task.reference_image_urls = resolved
 
         await reset_task_for_regenerate(db, task)
 
